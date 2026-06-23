@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Piper TTS — Laboratorio</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2d3148;
+    --accent: #6c63ff;
+    --accent2: #00c9a7;
+    --text: #e2e4f0;
+    --muted: #7b7f9e;
+    --danger: #ff5a6e;
+    --success: #00c9a7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+  header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .5px; }
+  header span { font-size: .75rem; color: var(--muted); background: var(--border); padding: 2px 8px; border-radius: 999px; }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 0 2rem; }
+  .tab { padding: .75rem 1.5rem; cursor: pointer; font-size: .9rem; color: var(--muted); border-bottom: 2px solid transparent; transition: all .2s; }
+  .tab.active { color: var(--accent); border-color: var(--accent); }
+  .tab:hover:not(.active) { color: var(--text); }
+  .panel { display: none; padding: 2rem; max-width: 860px; margin: 0 auto; }
+  .panel.active { display: block; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+  .card h2 { font-size: .95rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 1.2rem; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: .4rem; margin-top: 1rem; }
+  label:first-child { margin-top: 0; }
+  textarea, input[type=text], input[type=number], select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: .65rem .9rem; font-size: .95rem; outline: none; transition: border-color .2s;
+  }
+  textarea:focus, input:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 90px; font-family: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+  .toggle-row { display: flex; align-items: center; gap: .6rem; margin-top: 1rem; }
+  .toggle-row input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+  .toggle-row label { margin: 0; color: var(--text); font-size: .9rem; cursor: pointer; }
+  button {
+    margin-top: 1.2rem; padding: .75rem 1.8rem; background: var(--accent); color: #fff;
+    border: none; border-radius: 8px; font-size: .95rem; font-weight: 600; cursor: pointer; transition: opacity .2s;
+  }
+  button:hover { opacity: .85; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.secondary { background: var(--border); color: var(--text); }
+  button.danger { background: var(--danger); }
+  .timing-badge {
+    display: inline-flex; align-items: center; gap: .4rem; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 999px; padding: .3rem .9rem; font-size: .82rem;
+    margin-top: .8rem; color: var(--muted);
+  }
+  .timing-badge .val { color: var(--accent2); font-weight: 700; }
+  .cache-badge { background: var(--accent2); color: #000; padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 700; margin-left: .5rem; }
+  audio { width: 100%; margin-top: 1rem; border-radius: 8px; }
+  .progress-bar-outer { background: var(--bg); border-radius: 999px; height: 8px; margin-top: 1rem; overflow: hidden; display: none; }
+  .progress-bar-inner { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
+  .result-list { margin-top: 1rem; max-height: 300px; overflow-y: auto; }
+  .result-item { display: flex; justify-content: space-between; align-items: center; padding: .5rem .8rem; border-radius: 6px; margin-bottom: .4rem; background: var(--bg); font-size: .85rem; }
+  .result-item .label { color: var(--text); }
+  .result-item .meta { color: var(--muted); }
+  .result-item.error { border-left: 3px solid var(--danger); }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1rem; margin-top: .5rem; }
+  .stat-box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1rem; text-align: center; }
+  .stat-box .num { font-size: 1.4rem; font-weight: 700; color: var(--accent2); }
+  .stat-box .desc { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
+  .warmup-tags { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+  .warmup-tag { background: var(--border); border-radius: 999px; padding: .25rem .8rem; font-size: .82rem; display: flex; align-items: center; gap: .4rem; }
+  .warmup-tag button { margin: 0; padding: 0; background: none; color: var(--muted); font-size: 1rem; line-height: 1; }
+  .section-label { font-size: .75rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: .6rem; }
+  .download-link { display: inline-block; margin-top: .8rem; color: var(--accent); font-size: .9rem; text-decoration: none; }
+  .download-link:hover { text-decoration: underline; }
+  .error-msg { color: var(--danger); font-size: .85rem; margin-top: .8rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🎙 Piper TTS Lab</h1>
+  <span id="voiceCount">cargando voces…</span>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('single')">Audio individual</div>
+  <div class="tab" onclick="switchTab('batch')">Batch CSV</div>
+  <div class="tab" onclick="switchTab('warmup')">Precalentamiento</div>
+  <div class="tab" onclick="switchTab('cache')">Caché</div>
+</div>
+
+<!-- ─── SINGLE ─── -->
+<div id="panel-single" class="panel active">
+  <div class="card">
+    <h2>Texto → Audio</h2>
+    <label>Texto</label>
+    <textarea id="s-text" placeholder="Escribe el texto a sintetizar…"></textarea>
+    <label>Voz</label>
+    <select id="s-voice"></select>
+    <div class="row3" style="margin-top:1rem">
+      <div>
+        <label>Velocidad (length_scale)</label>
+        <input type="number" id="s-length" value="0.95" step="0.05" min="0.5" max="2.0">
+      </div>
+      <div>
+        <label>Variación tonal (noise_scale)</label>
+        <input type="number" id="s-noise" value="0.85" step="0.05" min="0" max="1">
+      </div>
+      <div>
+        <label>Variación ritmo (noise_w)</label>
+        <input type="number" id="s-noisew" value="0.9" step="0.05" min="0" max="1">
+      </div>
+    </div>
+    <label>Pausa entre segmentos (ms)</label>
+    <input type="number" id="s-pause" value="150" step="10" min="0" max="1000" style="width:140px">
+    <div class="toggle-row" style="margin-top:1rem">
+      <input type="checkbox" id="s-telephony" checked>
+      <label for="s-telephony">Modo telefonía (8 kHz) — archivos más pequeños, compatible con llamadas</label>
+    </div>
+    <button id="s-btn" onclick="generateSingle()">Generar audio</button>
+  </div>
+
+  <div class="card" id="s-result" style="display:none">
+    <h2>Resultado</h2>
+    <audio id="s-audio" controls></audio>
+    <div>
+      <span class="timing-badge">⏱ Total: <span class="val" id="s-total">—</span> ms</span>
+      <span class="timing-badge">🧠 Inferencia: <span class="val" id="s-inf">—</span> ms</span>
+      <span class="timing-badge">📦 Segmentos: <span class="val" id="s-segs">—</span> (<span id="s-hits" style="color:var(--success)">0</span> caché / <span id="s-misses" style="color:var(--danger)">0</span> nuevos)</span>
+      <span id="s-cache-badge"></span>
+    </div>
+    <a class="download-link" id="s-download" href="#">⬇ Descargar WAV</a>
+  </div>
+</div>
+
+<!-- ─── BATCH ─── -->
+<div id="panel-batch" class="panel">
+  <div class="card">
+    <h2>Generación masiva</h2>
+    <label>Template (usa <code>{columna}</code> como placeholder)</label>
+    <textarea id="b-template" rows="3" placeholder='Hola {nombre}, su saldo es {saldo} pesos.'></textarea>
+    <label>Voz</label>
+    <select id="b-voice"></select>
+    <label>Archivo CSV</label>
+    <input type="file" id="b-csv" accept=".csv" style="color:var(--text);margin-top:.4rem">
+    <div class="row3" style="margin-top:1rem">
+      <div>
+        <label>Velocidad</label>
+        <input type="number" id="b-length" value="0.95" step="0.05" min="0.5" max="2.0">
+      </div>
+      <div>
+        <label>Variación tonal (noise_scale)</label>
+        <input type="number" id="b-noise" value="0.85" step="0.05" min="0" max="1">
+      </div>
+      <div>
+        <label>Variación ritmo (noise_w)</label>
+        <input type="number" id="b-noisew" value="0.9" step="0.05" min="0" max="1">
+      </div>
+    </div>
+    <div class="toggle-row" style="margin-top:1rem">
+      <input type="checkbox" id="b-telephony" checked>
+      <label for="b-telephony">Modo telefonía (8 kHz) — archivos más pequeños, compatible con llamadas</label>
+    </div>
+    <button id="b-btn" onclick="generateBatch()">Generar batch</button>
+    <div class="progress-bar-outer" id="b-progress">
+      <div class="progress-bar-inner" id="b-bar" style="width:0%"></div>
+    </div>
+    <p class="error-msg" id="b-error" style="display:none"></p>
+  </div>
+
+  <div class="card" id="b-result" style="display:none">
+    <h2>Resultado batch</h2>
+    <div class="stat-grid" id="b-stats"></div>
+    <div class="result-list" id="b-list"></div>
+    <a class="download-link" id="b-download" href="#">⬇ Descargar ZIP</a>
+  </div>
+</div>
+
+<!-- ─── BENCHMARK ─── -->
+<!-- ─── WARMUP ─── -->
+<div id="panel-warmup" class="panel">
+
+  <div class="card">
+    <h2>Manual — frases / nombres</h2>
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:1rem">Escribe cada frase o nombre y presiona <b>+</b> o Enter. Se guardan como segmentos en caché.</p>
+    <label>Voz</label>
+    <select id="w-voice"></select>
+    <label>Agregar frase / nombre</label>
+    <div style="display:flex;gap:.5rem;margin-top:.4rem">
+      <input type="text" id="w-input" placeholder='ej. "Juan" o "Buen día"' style="flex:1" onkeydown="if(event.key==='Enter')addWarmupTag()">
+      <button onclick="addWarmupTag()" style="margin-top:0;padding:.65rem 1rem">+</button>
+    </div>
+    <div class="warmup-tags" id="w-tags"></div>
+    <button id="w-btn" onclick="runWarmup()">Precalentar</button>
+  </div>
+
+  <div class="card">
+    <h2>Masivo — desde CSV</h2>
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:1rem">Sube un CSV y elige la columna a precalentar. Útil para precachear todos los nombres o valores de un lote antes de lanzar el batch.</p>
+    <label>Voz</label>
+    <select id="wcsv-voice"></select>
+    <label>Archivo CSV</label>
+    <input type="file" id="wcsv-file" accept=".csv" style="color:var(--text);margin-top:.4rem">
+    <label>Nombre de la columna a precalentar</label>
+    <input type="text" id="wcsv-col" placeholder='ej. nombre'>
+    <button id="wcsv-btn" onclick="runWarmupCsv()">Precalentar desde CSV</button>
+    <p class="error-msg" id="wcsv-error" style="display:none"></p>
+  </div>
+
+  <div class="card" id="w-result" style="display:none">
+    <h2>Resultado</h2>
+    <div class="stat-grid" id="w-stats" style="margin-bottom:1rem"></div>
+    <div class="result-list" id="w-list"></div>
+  </div>
+</div>
+
+<!-- ─── CACHE ─── -->
+<div id="panel-cache" class="panel">
+  <div class="card">
+    <h2>Estado del caché</h2>
+    <div style="display:flex;gap:.8rem;align-items:center">
+      <button class="secondary" onclick="loadCacheStats()">Refrescar</button>
+      <button class="danger" onclick="clearCache()">🗑 Limpiar caché</button>
+    </div>
+    <div class="stat-grid" id="cache-stats" style="margin-top:1rem"></div>
+  </div>
+</div>
+
+<script>
+let voices = [];
+
+async function init() {
+  try {
+    const res = await fetch('/voices');
+    voices = await res.json();
+    const selects = ['s-voice','b-voice','w-voice','wcsv-voice'];
+    selects.forEach(id => {
+      const sel = document.getElementById(id);
+      sel.innerHTML = voices.length
+        ? voices.filter(v=>v.ready).map(v=>`<option value="${v.name}">${v.name}</option>`).join('')
+        : '<option value="">Sin modelos en /models</option>';
+    });
+    document.getElementById('voiceCount').textContent =
+      `${voices.filter(v=>v.ready).length} voz(es) disponible(s)`;
+  } catch(e) {
+    document.getElementById('voiceCount').textContent = 'Error al cargar voces';
+  }
+}
+
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ['single','batch','warmup','cache'][i]===name));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('panel-'+name).classList.add('active');
+  if(name==='cache') loadCacheStats();
+}
+
+async function generateSingle() {
+  const btn = document.getElementById('s-btn');
+  const text = document.getElementById('s-text').value.trim();
+  if(!text) return;
+  btn.disabled = true; btn.textContent = 'Generando…';
+
+  const fd = new FormData();
+  fd.append('text', text);
+  fd.append('voice', document.getElementById('s-voice').value);
+  fd.append('length_scale', document.getElementById('s-length').value);
+  fd.append('noise_scale', document.getElementById('s-noise').value);
+  fd.append('noise_w', document.getElementById('s-noisew').value);
+  fd.append('pause_ms', document.getElementById('s-pause').value || 150);
+  fd.append('output_sample_rate', document.getElementById('s-telephony').checked ? 8000 : 22050);
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch('/tts/single', { method:'POST', body: fd });
+    if(!res.ok) { const e=await res.json(); throw new Error(e.detail||'Error'); }
+
+    const totalMs = res.headers.get('X-Timing-Total-Ms');
+    const infMs = res.headers.get('X-Timing-Inference-Ms');
+    const fromCache = res.headers.get('X-From-Cache') === 'true';
+    const cacheHits = res.headers.get('X-Cache-Hits') || '0';
+    const cacheMisses = res.headers.get('X-Cache-Misses') || '0';
+    const segments = res.headers.get('X-Segments') || '1';
+    const filename = res.headers.get('X-Filename');
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    document.getElementById('s-audio').src = url;
+    document.getElementById('s-total').textContent = fromCache ? '< 1 (caché)' : totalMs;
+    document.getElementById('s-inf').textContent = fromCache ? '< 1 (caché)' : infMs;
+    document.getElementById('s-segs').textContent = fromCache ? '—' : segments;
+    document.getElementById('s-hits').textContent = fromCache ? segments : cacheHits;
+    document.getElementById('s-misses').textContent = fromCache ? '0' : cacheMisses;
+    document.getElementById('s-cache-badge').innerHTML = fromCache
+      ? '<span class="cache-badge">⚡ CACHÉ COMPLETO</span>' : '';
+    document.getElementById('s-download').href = `/tts/download/${filename}`;
+    document.getElementById('s-result').style.display = 'block';
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+  btn.disabled = false; btn.textContent = 'Generar audio';
+}
+
+async function generateBatch() {
+  const btn = document.getElementById('b-btn');
+  const template = document.getElementById('b-template').value.trim();
+  const csvFile = document.getElementById('b-csv').files[0];
+  const errEl = document.getElementById('b-error');
+  errEl.style.display = 'none';
+
+  if(!template || !csvFile) { errEl.textContent='Completa template y CSV'; errEl.style.display='block'; return; }
+
+  btn.disabled = true; btn.textContent = 'Procesando…';
+  document.getElementById('b-progress').style.display = 'block';
+  document.getElementById('b-bar').style.width = '30%';
+
+  const fd = new FormData();
+  fd.append('template', template);
+  fd.append('csv_file', csvFile);
+  fd.append('voice', document.getElementById('b-voice').value);
+  fd.append('length_scale', document.getElementById('b-length').value);
+  fd.append('noise_scale', document.getElementById('b-noise').value);
+  fd.append('noise_w', document.getElementById('b-noisew').value);
+  fd.append('pause_ms', 150);
+  fd.append('output_sample_rate', document.getElementById('b-telephony').checked ? 8000 : 22050);
+
+  try {
+    const res = await fetch('/tts/batch', { method:'POST', body:fd });
+    document.getElementById('b-bar').style.width = '90%';
+    if(!res.ok) { const e=await res.json(); throw new Error(e.detail||'Error'); }
+
+    const totalMs = res.headers.get('X-Total-Ms');
+    const count = res.headers.get('X-Audio-Count');
+    const jobId = res.headers.get('X-Job-Id');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    document.getElementById('b-bar').style.width = '100%';
+    document.getElementById('b-stats').innerHTML = `
+      <div class="stat-box"><div class="num">${count}</div><div class="desc">Audios generados</div></div>
+      <div class="stat-box"><div class="num">${totalMs} ms</div><div class="desc">Tiempo total</div></div>
+      <div class="stat-box"><div class="num">${Math.round(totalMs/count)} ms</div><div class="desc">Promedio por audio</div></div>
+    `;
+    document.getElementById('b-download').href = url;
+    document.getElementById('b-download').download = `batch_${jobId}.zip`;
+    document.getElementById('b-result').style.display = 'block';
+  } catch(e) {
+    errEl.textContent = 'Error: ' + e.message; errEl.style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = 'Generar batch';
+  setTimeout(()=>{ document.getElementById('b-progress').style.display='none'; }, 1000);
+}
+
+async function runBenchmark() {
+  const btn = document.getElementById('bm-btn');
+  btn.disabled = true; btn.textContent = 'Ejecutando…';
+  const fd = new FormData();
+  fd.append('text', document.getElementById('bm-text').value);
+  fd.append('voice', document.getElementById('bm-voice').value);
+  fd.append('n', document.getElementById('bm-n').value);
+  try {
+    const res = await fetch('/benchmark', { method:'POST', body:fd });
+    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
+    const d = await res.json();
+    document.getElementById('bm-stats').innerHTML = `
+      <div class="stat-box"><div class="num">${d.min_ms}</div><div class="desc">Mínimo (ms)</div></div>
+      <div class="stat-box"><div class="num">${d.avg_ms}</div><div class="desc">Promedio (ms)</div></div>
+      <div class="stat-box"><div class="num">${d.max_ms}</div><div class="desc">Máximo (ms)</div></div>
+      <div class="stat-box"><div class="num">${d.p95_ms}</div><div class="desc">P95 (ms)</div></div>
+    `;
+    document.getElementById('bm-runs').innerHTML = d.runs.map((t,i)=>`<span style="margin-right:.6rem">Run ${i+1}: <b style="color:var(--accent2)">${t} ms</b></span>`).join('');
+    document.getElementById('bm-result').style.display = 'block';
+  } catch(e) { alert('Error: '+e.message); }
+  btn.disabled = false; btn.textContent = 'Ejecutar benchmark';
+}
+
+let warmupPhrases = [];
+function addWarmupTag() {
+  const inp = document.getElementById('w-input');
+  const val = inp.value.trim();
+  if(!val || warmupPhrases.includes(val)) { inp.value=''; return; }
+  warmupPhrases.push(val);
+  renderWarmupTags();
+  inp.value = '';
+}
+function removeWarmupTag(i) {
+  warmupPhrases.splice(i,1);
+  renderWarmupTags();
+}
+function renderWarmupTags() {
+  document.getElementById('w-tags').innerHTML = warmupPhrases.map((p,i)=>
+    `<div class="warmup-tag">${p}<button onclick="removeWarmupTag(${i})">×</button></div>`
+  ).join('');
+}
+function _renderWarmupResults(warmed) {
+  const newOnes = warmed.filter(r => r.status === 'cached');
+  const hits = warmed.filter(r => r.status === 'already_cached');
+  document.getElementById('w-stats').innerHTML = `
+    <div class="stat-box"><div class="num">${warmed.length}</div><div class="desc">Total</div></div>
+    <div class="stat-box"><div class="num" style="color:var(--success)">${newOnes.length}</div><div class="desc">Nuevos</div></div>
+    <div class="stat-box"><div class="num" style="color:var(--muted)">${hits.length}</div><div class="desc">Ya en caché</div></div>
+  `;
+  document.getElementById('w-list').innerHTML = warmed.map(r =>
+    `<div class="result-item">
+      <span class="label">${r.phrase}</span>
+      <span class="meta">${r.status === 'cached' ? `✅ ${r.ms} ms` : '⚡ ya en caché'}</span>
+    </div>`
+  ).join('');
+  document.getElementById('w-result').style.display = 'block';
+}
+
+async function runWarmup() {
+  if(!warmupPhrases.length) return;
+  const btn = document.getElementById('w-btn');
+  btn.disabled = true; btn.textContent = 'Precalentando…';
+  const fd = new FormData();
+  fd.append('phrases', JSON.stringify(warmupPhrases));
+  fd.append('voice', document.getElementById('w-voice').value);
+  try {
+    const res = await fetch('/warmup', { method:'POST', body:fd });
+    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
+    const d = await res.json();
+    _renderWarmupResults(d.warmed);
+  } catch(e) { alert('Error: '+e.message); }
+  btn.disabled = false; btn.textContent = 'Precalentar';
+}
+
+async function runWarmupCsv() {
+  const btn = document.getElementById('wcsv-btn');
+  const errEl = document.getElementById('wcsv-error');
+  const file = document.getElementById('wcsv-file').files[0];
+  const col = document.getElementById('wcsv-col').value.trim();
+  errEl.style.display = 'none';
+  if(!file || !col) { errEl.textContent='Selecciona un CSV e indica la columna'; errEl.style.display='block'; return; }
+
+  btn.disabled = true; btn.textContent = 'Precalentando…';
+  const fd = new FormData();
+  fd.append('csv_file', file);
+  fd.append('column', col);
+  fd.append('voice', document.getElementById('wcsv-voice').value);
+  try {
+    const res = await fetch('/warmup/csv', { method:'POST', body:fd });
+    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
+    const d = await res.json();
+    _renderWarmupResults(d.warmed);
+  } catch(e) { errEl.textContent='Error: '+e.message; errEl.style.display='block'; }
+  btn.disabled = false; btn.textContent = 'Precalentar desde CSV';
+}
+
+async function loadCacheStats() {
+  const res = await fetch('/cache/stats');
+  const d = await res.json();
+  document.getElementById('cache-stats').innerHTML = `
+    <div class="stat-box"><div class="num">${d.full_audio_entries}</div><div class="desc">Audios completos</div></div>
+    <div class="stat-box"><div class="num">${d.segment_entries}</div><div class="desc">Segmentos</div></div>
+    <div class="stat-box"><div class="num">${d.total_size_mb} MB</div><div class="desc">Tamaño total</div></div>
+  `;
+}
+async function clearCache() {
+  if(!confirm('¿Limpiar todo el caché?')) return;
+  const res = await fetch('/cache/clear', { method:'DELETE' });
+  const d = await res.json();
+  alert(`${d.deleted} archivos eliminados`);
+  loadCacheStats();
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+piper-tts
+fastapi
+uvicorn[standard]
+python-multipart
+aiofiles
