@@ -1,17 +1,28 @@
 import hashlib
+import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
-CACHE_DIR = Path("output/cache")
-SEGMENT_DIR = Path("output/cache/segments")
-_MEM_LIMIT = 200
+# ── Ubicación del caché ───────────────────────────────────────────────────────
+# IMPORTANTE: el caché NO debe vivir en una carpeta sincronizada (OneDrive/Dropbox).
+# La sincronización vuelve lentas las lecturas/escrituras y bloquea archivos
+# (rompe el borrado). Usamos almacenamiento local. Se puede override con TTS_CACHE_DIR.
+_base = os.environ.get("TTS_CACHE_DIR") or os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+CACHE_DIR = Path(_base) / "tts_cache"
+SEGMENT_DIR = CACHE_DIR / "segments"
 
-# Caché en memoria: key → wav_bytes
-_mem_cache: dict[str, bytes] = {}
+# Cachés en memoria SEPARADOS — los audios completos (grandes) no deben expulsar
+# a los segmentos (pequeños y muy reutilizados).
+_FULL_MEM_LIMIT = 256        # audios completos: ~190KB c/u
+_SEG_MEM_LIMIT = 8192        # segmentos: pequeños, muchos hits → conservar muchos
 
-# Crear directorios una sola vez al importar
+_full_mem: "OrderedDict[str, bytes]" = OrderedDict()
+_seg_mem: "OrderedDict[str, bytes]" = OrderedDict()
+_lock = threading.Lock()
+
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SEGMENT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -20,10 +31,22 @@ def _normalize(text: str) -> str:
     return re.sub(r"^[\s.,;:!?¡¿]+|[\s.,;:!?¡¿]+$", "", text.strip().lower())
 
 
-def _mem_put(key: str, data: bytes) -> None:
-    if len(_mem_cache) >= _MEM_LIMIT:
-        _mem_cache.pop(next(iter(_mem_cache)))
-    _mem_cache[key] = data
+def _mem_get(store: "OrderedDict[str, bytes]", key: str) -> Optional[bytes]:
+    """Lee de RAM y marca como usado recientemente (LRU)."""
+    with _lock:
+        data = store.get(key)
+        if data is not None:
+            store.move_to_end(key)
+        return data
+
+
+def _mem_put(store: "OrderedDict[str, bytes]", key: str, data: bytes, limit: int) -> None:
+    """Guarda en RAM y expulsa el menos usado recientemente si se pasa del límite."""
+    with _lock:
+        store[key] = data
+        store.move_to_end(key)
+        while len(store) > limit:
+            store.popitem(last=False)  # expulsa el LRU (frente), no el más reciente
 
 
 # ── Claves ───────────────────────────────────────────────────────────────────
@@ -41,37 +64,47 @@ def segment_key(text: str, voice_name: str, length_scale: float, noise_scale: fl
 # ── Caché de audio completo ──────────────────────────────────────────────────
 
 def get(key: str) -> Optional[bytes]:
-    if key in _mem_cache:
-        return _mem_cache[key]
+    cached = _mem_get(_full_mem, key)
+    if cached is not None:
+        return cached
     path = CACHE_DIR / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
-        _mem_put(key, data)
+        _mem_put(_full_mem, key, data, _FULL_MEM_LIMIT)
         return data
     return None
 
 
 def put(key: str, wav_bytes: bytes) -> None:
-    _mem_put(key, wav_bytes)
-    threading.Thread(target=(CACHE_DIR / f"{key}.wav").write_bytes, args=(wav_bytes,), daemon=True).start()
+    _mem_put(_full_mem, key, wav_bytes, _FULL_MEM_LIMIT)
+    threading.Thread(target=_write_safe, args=(CACHE_DIR / f"{key}.wav", wav_bytes), daemon=True).start()
 
 
 # ── Caché de segmentos ───────────────────────────────────────────────────────
 
 def get_segment(key: str) -> Optional[bytes]:
-    if key in _mem_cache:
-        return _mem_cache[key]
+    cached = _mem_get(_seg_mem, key)
+    if cached is not None:
+        return cached
     path = SEGMENT_DIR / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
-        _mem_put(key, data)
+        _mem_put(_seg_mem, key, data, _SEG_MEM_LIMIT)
         return data
     return None
 
 
 def put_segment(key: str, wav_bytes: bytes) -> None:
-    _mem_put(key, wav_bytes)
-    threading.Thread(target=(SEGMENT_DIR / f"{key}.wav").write_bytes, args=(wav_bytes,), daemon=True).start()
+    _mem_put(_seg_mem, key, wav_bytes, _SEG_MEM_LIMIT)
+    threading.Thread(target=_write_safe, args=(SEGMENT_DIR / f"{key}.wav", wav_bytes), daemon=True).start()
+
+
+def _write_safe(path: Path, data: bytes) -> None:
+    """Escritura a disco que no revienta si el archivo está bloqueado."""
+    try:
+        path.write_bytes(data)
+    except OSError:
+        pass
 
 
 # ── Stats y limpieza ─────────────────────────────────────────────────────────
@@ -84,15 +117,27 @@ def stats() -> dict:
         "entries": len(full_files) + len(seg_files),
         "full_audio_entries": len(full_files),
         "segment_entries": len(seg_files),
+        "mem_full": len(_full_mem),
+        "mem_segments": len(_seg_mem),
         "total_size_mb": round(total_bytes / 1024 / 1024, 3),
+        "cache_dir": str(CACHE_DIR),
     }
 
 
 def clear() -> int:
-    files = list(CACHE_DIR.glob("*.wav")) + list(SEGMENT_DIR.glob("*.wav"))
-    for f in files:
-        f.unlink()
-    for f in list(CACHE_DIR.glob("*.json")) + list(SEGMENT_DIR.glob("*.json")):
-        f.unlink()
-    _mem_cache.clear()
-    return len(files)
+    """Borra todo el caché en disco y RAM. Resiliente a archivos bloqueados."""
+    deleted = 0
+    targets = (
+        list(CACHE_DIR.glob("*.wav")) + list(SEGMENT_DIR.glob("*.wav"))
+        + list(CACHE_DIR.glob("*.json")) + list(SEGMENT_DIR.glob("*.json"))
+    )
+    for f in targets:
+        try:
+            f.unlink()
+            deleted += 1
+        except OSError:
+            pass  # archivo bloqueado/sincronizando — se ignora
+    with _lock:
+        _full_mem.clear()
+        _seg_mem.clear()
+    return deleted

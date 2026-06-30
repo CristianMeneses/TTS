@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Piper TTS — Laboratorio</title>
+<title>TTS Lab — Piper + Kokoro</title>
 <style>
   :root {
     --bg: #0f1117;
@@ -81,7 +81,7 @@
 <body>
 
 <header>
-  <h1>🎙 Piper TTS Lab</h1>
+  <h1>🎙 TTS Lab — Piper + Kokoro</h1>
   <span id="voiceCount">cargando voces…</span>
 </header>
 
@@ -127,8 +127,9 @@
     <h2>Resultado</h2>
     <audio id="s-audio" controls></audio>
     <div>
-      <span class="timing-badge">⏱ Total: <span class="val" id="s-total">—</span> ms</span>
+      <span class="timing-badge">⏱ Servidor total: <span class="val" id="s-total">—</span> ms</span>
       <span class="timing-badge">🧠 Inferencia: <span class="val" id="s-inf">—</span> ms</span>
+      <span class="timing-badge">🔧 Overhead caché/cola: <span class="val" id="s-overhead">—</span> ms</span>
       <span class="timing-badge">📦 Segmentos: <span class="val" id="s-segs">—</span> (<span id="s-hits" style="color:var(--success)">0</span> caché / <span id="s-misses" style="color:var(--danger)">0</span> nuevos)</span>
       <span id="s-cache-badge"></span>
     </div>
@@ -144,8 +145,8 @@
     <textarea id="b-template" rows="3" placeholder='Hola {nombre}, su saldo es {saldo} pesos.'></textarea>
     <label>Voz</label>
     <select id="b-voice"></select>
-    <label>Archivo CSV</label>
-    <input type="file" id="b-csv" accept=".csv" style="color:var(--text);margin-top:.4rem">
+    <label>Archivo CSV o XLSX</label>
+    <input type="file" id="b-csv" accept=".csv,.xlsx" style="color:var(--text);margin-top:.4rem">
     <div class="row3" style="margin-top:1rem">
       <div>
         <label>Velocidad</label>
@@ -164,6 +165,10 @@
       <input type="checkbox" id="b-telephony" checked>
       <label for="b-telephony">Modo telefonía (8 kHz) — archivos más pequeños, compatible con llamadas</label>
     </div>
+    <div class="toggle-row">
+      <input type="checkbox" id="b-zip">
+      <label for="b-zip">Generar ZIP descargable al final</label>
+    </div>
     <button id="b-btn" onclick="generateBatch()">Generar batch</button>
     <div class="progress-bar-outer" id="b-progress">
       <div class="progress-bar-inner" id="b-bar" style="width:0%"></div>
@@ -174,8 +179,10 @@
   <div class="card" id="b-result" style="display:none">
     <h2>Resultado batch</h2>
     <div class="stat-grid" id="b-stats"></div>
-    <div class="result-list" id="b-list"></div>
-    <a class="download-link" id="b-download" href="#">⬇ Descargar ZIP</a>
+    <div class="result-list" id="b-list" style="max-height:500px"></div>
+    <div id="b-zip-wrap" style="display:none;margin-top:.8rem">
+      <a class="download-link" id="b-download" href="#">⬇ Descargar ZIP</a>
+    </div>
   </div>
 </div>
 
@@ -226,6 +233,7 @@
       <button class="danger" onclick="clearCache()">🗑 Limpiar caché</button>
     </div>
     <div class="stat-grid" id="cache-stats" style="margin-top:1rem"></div>
+    <p id="cache-dir-note" style="color:var(--muted);font-size:.78rem;margin-top:1rem;word-break:break-all"></p>
   </div>
 </div>
 
@@ -239,9 +247,32 @@ async function init() {
     const selects = ['s-voice','b-voice','w-voice','wcsv-voice'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
-      sel.innerHTML = voices.length
-        ? voices.filter(v=>v.ready).map(v=>`<option value="${v.name}">${v.name}</option>`).join('')
-        : '<option value="">Sin modelos en /models</option>';
+      const piper  = voices.filter(v => v.ready && v.engine !== 'kokoro');
+      const k_es   = voices.filter(v => v.engine === 'kokoro' && v.lang_code === 'es');
+      const k_en   = voices.filter(v => v.engine === 'kokoro' && (v.lang_code === 'en-us' || v.lang_code === 'en-gb'));
+      const k_other= voices.filter(v => v.engine === 'kokoro' && !['es','en-us','en-gb'].includes(v.lang_code));
+      let html = '';
+      if (piper.length) {
+        html += `<optgroup label="Piper (local)">`;
+        html += piper.map(v=>`<option value="${v.name}">${v.name}</option>`).join('');
+        html += `</optgroup>`;
+      }
+      if (k_es.length) {
+        html += `<optgroup label="Kokoro — Español">`;
+        html += k_es.map(v=>`<option value="${v.name}">${v.voice_id} — ${v.language}</option>`).join('');
+        html += `</optgroup>`;
+      }
+      if (k_en.length) {
+        html += `<optgroup label="Kokoro — Inglés">`;
+        html += k_en.map(v=>`<option value="${v.name}">${v.voice_id} — ${v.language}</option>`).join('');
+        html += `</optgroup>`;
+      }
+      if (k_other.length) {
+        html += `<optgroup label="Kokoro — Otros idiomas">`;
+        html += k_other.map(v=>`<option value="${v.name}">${v.voice_id} — ${v.language}</option>`).join('');
+        html += `</optgroup>`;
+      }
+      sel.innerHTML = html || '<option value="">Sin modelos en /models</option>';
     });
     document.getElementById('voiceCount').textContent =
       `${voices.filter(v=>v.ready).length} voz(es) disponible(s)`;
@@ -273,34 +304,32 @@ async function generateSingle() {
   fd.append('pause_ms', document.getElementById('s-pause').value || 150);
   fd.append('output_sample_rate', document.getElementById('s-telephony').checked ? 8000 : 22050);
 
-  const t0 = performance.now();
   try {
+    // POST devuelve JSON inmediatamente cuando la inferencia termina
     const res = await fetch('/tts/single', { method:'POST', body: fd });
     if(!res.ok) { const e=await res.json(); throw new Error(e.detail||'Error'); }
+    const data = await res.json();
 
-    const totalMs = res.headers.get('X-Timing-Total-Ms');
-    const infMs = res.headers.get('X-Timing-Inference-Ms');
-    const fromCache = res.headers.get('X-From-Cache') === 'true';
-    const cacheHits = res.headers.get('X-Cache-Hits') || '0';
-    const cacheMisses = res.headers.get('X-Cache-Misses') || '0';
-    const segments = res.headers.get('X-Segments') || '1';
-    const filename = res.headers.get('X-Filename');
+    const t = data.timing;
+    const fromCache = data.from_cache;
 
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    document.getElementById('s-audio').src = url;
-    document.getElementById('s-total').textContent = fromCache ? '< 1 (caché)' : totalMs;
-    document.getElementById('s-inf').textContent = fromCache ? '< 1 (caché)' : infMs;
-    document.getElementById('s-segs').textContent = fromCache ? '—' : segments;
-    document.getElementById('s-hits').textContent = fromCache ? segments : cacheHits;
-    document.getElementById('s-misses').textContent = fromCache ? '0' : cacheMisses;
+    // Apuntar el audio al GET /tts/play/{key} — el browser lo descarga por separado
+    document.getElementById('s-audio').src = `/tts/play/${data.play_key}`;
+    document.getElementById('s-total').textContent = fromCache ? '< 1 (caché)' : t.server_total_ms;
+    document.getElementById('s-inf').textContent = fromCache ? '< 1 (caché)' : t.inference_ms;
+    document.getElementById('s-overhead').textContent = fromCache ? '—' : t.queue_overhead_ms;
+    document.getElementById('s-segs').textContent = fromCache ? '—' : t.segments;
+    document.getElementById('s-hits').textContent = fromCache ? t.segments : t.cache_hits;
+    document.getElementById('s-misses').textContent = fromCache ? '0' : t.cache_misses;
     document.getElementById('s-cache-badge').innerHTML = fromCache
       ? '<span class="cache-badge">⚡ CACHÉ COMPLETO</span>' : '';
-    document.getElementById('s-download').href = `/tts/download/${filename}`;
+    document.getElementById('s-download').href = `/tts/download/${data.filename}`;
     document.getElementById('s-result').style.display = 'block';
   } catch(e) {
     alert('Error: ' + e.message);
   }
+  // El botón se reactiva aquí — cuando el POST termina (= inferencia lista)
+  // El audio sigue cargando en paralelo en el <audio> tag
   btn.disabled = false; btn.textContent = 'Generar audio';
 }
 
@@ -311,12 +340,19 @@ async function generateBatch() {
   const errEl = document.getElementById('b-error');
   errEl.style.display = 'none';
 
-  if(!template || !csvFile) { errEl.textContent='Completa template y CSV'; errEl.style.display='block'; return; }
+  if(!template || !csvFile) { errEl.textContent='Completa template y archivo'; errEl.style.display='block'; return; }
+
+  let totalRows = 0; // lo fija el evento 'start' del stream (sirve para csv y xlsx)
 
   btn.disabled = true; btn.textContent = 'Procesando…';
   document.getElementById('b-progress').style.display = 'block';
-  document.getElementById('b-bar').style.width = '30%';
+  document.getElementById('b-bar').style.width = '0%';
+  document.getElementById('b-result').style.display = 'block';
+  document.getElementById('b-list').innerHTML = '';
+  document.getElementById('b-stats').innerHTML = '';
+  document.getElementById('b-zip-wrap').style.display = 'none';
 
+  const includeZip = document.getElementById('b-zip').checked;
   const fd = new FormData();
   fd.append('template', template);
   fd.append('csv_file', csvFile);
@@ -326,32 +362,94 @@ async function generateBatch() {
   fd.append('noise_w', document.getElementById('b-noisew').value);
   fd.append('pause_ms', 150);
   fd.append('output_sample_rate', document.getElementById('b-telephony').checked ? 8000 : 22050);
+  fd.append('include_zip', includeZip ? 'true' : 'false');
 
   try {
     const res = await fetch('/tts/batch', { method:'POST', body:fd });
-    document.getElementById('b-bar').style.width = '90%';
     if(!res.ok) { const e=await res.json(); throw new Error(e.detail||'Error'); }
 
-    const totalMs = res.headers.get('X-Total-Ms');
-    const count = res.headers.get('X-Audio-Count');
-    const jobId = res.headers.get('X-Job-Id');
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let completedRows = 0;
 
-    document.getElementById('b-bar').style.width = '100%';
-    document.getElementById('b-stats').innerHTML = `
-      <div class="stat-box"><div class="num">${count}</div><div class="desc">Audios generados</div></div>
-      <div class="stat-box"><div class="num">${totalMs} ms</div><div class="desc">Tiempo total</div></div>
-      <div class="stat-box"><div class="num">${Math.round(totalMs/count)} ms</div><div class="desc">Promedio por audio</div></div>
-    `;
-    document.getElementById('b-download').href = url;
-    document.getElementById('b-download').download = `batch_${jobId}.zip`;
-    document.getElementById('b-result').style.display = 'block';
+    while(true) {
+      const { value, done } = await reader.read();
+      if(done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // guarda línea incompleta
+      for(const line of lines) {
+        if(!line.startsWith('data: ')) continue;
+        let data;
+        try { data = JSON.parse(line.slice(6)); } catch { continue; }
+        if(data.start) {
+          totalRows = data.total;
+        } else if(data.done) {
+          _renderBatchSummary(data, totalRows, completedRows);
+          document.getElementById('b-bar').style.width = '100%';
+          btn.disabled = false; btn.textContent = 'Generar batch';
+          setTimeout(()=>{ document.getElementById('b-progress').style.display='none'; }, 1200);
+        } else if(data.error) {
+          _renderBatchRowError(data);
+          completedRows++;
+          document.getElementById('b-bar').style.width = (completedRows / totalRows * 100) + '%';
+        } else {
+          _renderBatchRow(data);
+          completedRows++;
+          document.getElementById('b-bar').style.width = (completedRows / totalRows * 100) + '%';
+        }
+      }
+    }
   } catch(e) {
     errEl.textContent = 'Error: ' + e.message; errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Generar batch';
+    document.getElementById('b-progress').style.display = 'none';
   }
-  btn.disabled = false; btn.textContent = 'Generar batch';
-  setTimeout(()=>{ document.getElementById('b-progress').style.display='none'; }, 1000);
+}
+
+function _renderBatchRow(data) {
+  const list = document.getElementById('b-list');
+  const div = document.createElement('div');
+  div.className = 'result-item';
+  div.style.flexDirection = 'column';
+  div.style.alignItems = 'flex-start';
+  div.style.gap = '.4rem';
+  const cacheTag = data.from_cache ? '<span class="cache-badge">⚡ caché</span>' : '';
+  div.innerHTML = `
+    <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+      <span class="label">Fila ${data.row} — <code style="font-size:.8rem">${data.filename}</code>${cacheTag}</span>
+      <span class="meta">${data.from_cache ? '&lt;1' : data.timing_ms} ms</span>
+    </div>
+    <audio controls src="/tts/play/${data.play_key}" style="width:100%;height:32px;margin:0"></audio>
+  `;
+  list.appendChild(div);
+  list.scrollTop = list.scrollHeight;
+}
+
+function _renderBatchRowError(data) {
+  const list = document.getElementById('b-list');
+  const div = document.createElement('div');
+  div.className = 'result-item error';
+  div.innerHTML = `<span class="label">Fila ${data.row}</span><span class="meta" style="color:var(--danger)">${data.error}</span>`;
+  list.appendChild(div);
+}
+
+function _renderBatchSummary(data, totalRows, successful) {
+  const avgMs = successful > 0 ? Math.round(data.total_ms / successful) : 0;
+  const cacheCount = 0; // el server no envía cache count en done por ahora
+  document.getElementById('b-stats').innerHTML = `
+    <div class="stat-box"><div class="num">${data.successful}</div><div class="desc">Audios generados</div></div>
+    <div class="stat-box"><div class="num">${Math.round(data.total_ms)} ms</div><div class="desc">Tiempo total</div></div>
+    <div class="stat-box"><div class="num">${avgMs} ms</div><div class="desc">Promedio por audio</div></div>
+    ${data.errors > 0 ? `<div class="stat-box"><div class="num" style="color:var(--danger)">${data.errors}</div><div class="desc">Errores</div></div>` : ''}
+  `;
+  if(data.zip_key) {
+    const a = document.getElementById('b-download');
+    a.href = `/tts/zip/${data.zip_key}`;
+    a.download = `batch_${data.job_id}.zip`;
+    document.getElementById('b-zip-wrap').style.display = 'block';
+  }
 }
 
 async function runBenchmark() {
@@ -454,10 +552,16 @@ async function loadCacheStats() {
   const res = await fetch('/cache/stats');
   const d = await res.json();
   document.getElementById('cache-stats').innerHTML = `
-    <div class="stat-box"><div class="num">${d.full_audio_entries}</div><div class="desc">Audios completos</div></div>
-    <div class="stat-box"><div class="num">${d.segment_entries}</div><div class="desc">Segmentos</div></div>
+    <div class="stat-box"><div class="num">${d.full_audio_entries}</div><div class="desc">Audios completos (disco)</div></div>
+    <div class="stat-box"><div class="num">${d.segment_entries}</div><div class="desc">Segmentos (disco)</div></div>
+    <div class="stat-box"><div class="num" style="color:var(--accent)">${d.mem_full ?? '—'}</div><div class="desc">Audios en RAM</div></div>
+    <div class="stat-box"><div class="num" style="color:var(--accent)">${d.mem_segments ?? '—'}</div><div class="desc">Segmentos en RAM</div></div>
     <div class="stat-box"><div class="num">${d.total_size_mb} MB</div><div class="desc">Tamaño total</div></div>
   `;
+  if (d.cache_dir) {
+    const note = document.getElementById('cache-dir-note');
+    if (note) note.textContent = '📁 ' + d.cache_dir;
+  }
 }
 async function clearCache() {
   if(!confirm('¿Limpiar todo el caché?')) return;

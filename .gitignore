@@ -3,3 +3,11 @@ models/
 __pycache__/
 *.pyc
 .env
+*.log
+
+# Config local de Claude Code
+.claude/
+
+# Datos de prueba / del cliente (pueden contener PII — no subir al repo)
+*.csv
+*.xlsx
