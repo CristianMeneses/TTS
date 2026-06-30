@@ -4,7 +4,6 @@ class CampaignStatus
 {
     public string JobId { get; set; } = "";
     public string ClientId { get; set; } = "";
-    public string CampaignId { get; set; } = "";
     public string State { get; set; } = "queued"; // queued | processing | done | error
     public int TotalRows { get; set; }
     public int ProcessedRows { get; set; }

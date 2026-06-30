@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -642,6 +642,127 @@ async def v1_get_manifest(client_id: str, campaign_id: str, batch_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Manifiesto no encontrado")
     return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+@app.post("/v1/batch/run")
+async def v1_batch_run(request: Request):
+    """Endpoint JSON para el worker .NET.
+
+    Body esperado:
+      {
+        "jobId":      "job01",
+        "clientId":   "client25",
+        "voiceName":  "es_MX-claude-high",
+        "pendingAudio": [
+          {"recipient": "5512345678", "text": "Hola Juan, su saldo es 500 pesos."},
+          ...
+        ]
+      }
+
+    Los campos de síntesis (length_scale, noise_scale, etc.) usan los defaults
+    del servidor; se pueden sobrescribir con campos opcionales en el body.
+    """
+    body = await request.json()
+
+    client_id  = _safe_component(body.get("clientId", ""),  "clientId")
+    job_id     = _safe_component(body.get("jobId", ""),     "jobId") or uuid.uuid4().hex[:12]
+    voice      = body.get("voiceName", "")
+    pending    = body.get("pendingAudio", [])
+
+    if not client_id:
+        raise HTTPException(status_code=400, detail="clientId requerido")
+    if not voice:
+        raise HTTPException(status_code=400, detail="voiceName requerido")
+    if not pending:
+        raise HTTPException(status_code=400, detail="pendingAudio vacío")
+
+    model_path, config_path = _resolve_voice(voice)
+
+    length_scale = float(body.get("lengthScale",  0.95))
+    noise_scale  = float(body.get("noiseScale",   0.85))
+    noise_w      = float(body.get("noiseW",       0.9))
+    pause_ms     = int(body.get("pauseMs",        150))
+    include_text = bool(body.get("includeText",   True))
+
+    # Convertir pendingAudio al formato de filas que usa el pipeline existente.
+    # El texto ya viene armado → template de una sola variable {_text_}.
+    rows         = [{"_text_": str(item.get("text", "")), "_phone_": str(item.get("recipient", ""))} for item in pending]
+    template_parts = [("var", "_text_")]
+    phone_col    = "_phone_"
+
+    # Namespace de caché: por cliente (comparte entre jobs del mismo cliente)
+    namespace = _safe_component(client_id, "clientId")
+
+    campaign_dir = _campaign_dir(client_id, job_id)
+    audios_dir   = campaign_dir / "audios"
+    audios_dir.mkdir(parents=True, exist_ok=True)
+
+    vinfo = next((v for v in (tts_engine.list_available_voices(str(MODELS_DIR)) + kokoro_engine.list_voices())
+                  if v["name"] == voice), {})
+
+    loop = asyncio.get_event_loop()
+    sem  = asyncio.Semaphore(BATCH_CONCURRENCY)
+    t0   = time.perf_counter()
+
+    async def process(i: int, row: dict):
+        async with sem:
+            try:
+                return await loop.run_in_executor(
+                    executor, _generate_row_to_disk,
+                    i, row, template_parts, voice, model_path, config_path,
+                    length_scale, noise_scale, noise_w, pause_ms,
+                    namespace, audios_dir, phone_col, include_text,
+                )
+            except Exception as e:
+                return {"row_index": i + 1, "phone": rows[i].get("_phone_", ""), "status": "error", "error": str(e)}
+
+    audios   = await asyncio.gather(*[process(i, row) for i, row in enumerate(rows)])
+    total_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    ok       = [a for a in audios if a.get("status") == "ok"]
+    base_url = f"/v1/audio/{client_id}/{job_id}"
+    for a in ok:
+        a["retrieval_url"] = f"{base_url}/{a['audio_id']}"
+        # Exponer recipient en vez del campo interno _phone_
+        a["recipient"] = a.pop("phone", "")
+
+    manifest = {
+        "jobId":      job_id,
+        "clientId":   client_id,
+        "voiceName":  voice,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "voice": {
+            "name":      voice,
+            "engine":    vinfo.get("engine", "kokoro" if voice.startswith("kokoro:") else "piper"),
+            "lang_code": vinfo.get("lang_code"),
+        },
+        "audio_format": {
+            "codec": "pcm_mulaw", "container": "wav",
+            "sample_rate": 8000, "channels": 1, "bits": 8, "bitrate": 64000,
+        },
+        "params": {
+            "length_scale": length_scale, "noise_scale": noise_scale,
+            "noise_w": noise_w, "pause_ms": pause_ms,
+        },
+        "summary": {
+            "total":      len(rows),
+            "successful": len(ok),
+            "errors":     len(rows) - len(ok),
+            "from_cache": sum(1 for a in ok if a.get("from_cache")),
+            "total_ms":   total_ms,
+            "avg_ms":     round(total_ms / len(rows), 2) if rows else 0,
+        },
+        "retrieval_url_template": base_url + "/{audio_id}",
+        "audios": audios,
+    }
+
+    manifests_dir = campaign_dir / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    (manifests_dir / f"{job_id}.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return JSONResponse(manifest)
 
 
 def _warmup_segment(

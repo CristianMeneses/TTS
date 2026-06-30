@@ -29,6 +29,7 @@ class TtsAudio
     [JsonPropertyName("audio_id")]      public string? AudioId { get; set; }
     [JsonPropertyName("row_index")]     public int RowIndex { get; set; }
     [JsonPropertyName("phone")]         public string Phone { get; set; } = "";
+    [JsonPropertyName("recipient")]     public string Recipient { get; set; } = "";
     [JsonPropertyName("status")]        public string Status { get; set; } = "";
     [JsonPropertyName("error")]         public string? Error { get; set; }
     [JsonPropertyName("retrieval_url")] public string? RetrievalUrl { get; set; }

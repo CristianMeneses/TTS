@@ -29,15 +29,11 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
     if (form.Files.GetFile("file") is not IFormFile file)
         return Results.BadRequest("Campo 'file' requerido.");
 
-    var clientId   = form["client_id"].ToString();
-    var campaignId = form["campaign_id"].ToString();
-    var voice      = form["voice"].ToString();
-    var template   = form["template"].ToString();
+    var clientId = form["client_id"].ToString();
+    var voice    = form["voice"].ToString();
 
-    if (string.IsNullOrWhiteSpace(clientId))   return Results.BadRequest("client_id requerido.");
-    if (string.IsNullOrWhiteSpace(campaignId)) return Results.BadRequest("campaign_id requerido.");
-    if (string.IsNullOrWhiteSpace(voice))      return Results.BadRequest("voice requerido.");
-    if (string.IsNullOrWhiteSpace(template))   return Results.BadRequest("template requerido (ej: {Message}).");
+    if (string.IsNullOrWhiteSpace(clientId)) return Results.BadRequest("client_id requerido.");
+    if (string.IsNullOrWhiteSpace(voice))    return Results.BadRequest("voice requerido.");
 
     using var ms = new MemoryStream();
     await file.CopyToAsync(ms);
@@ -45,10 +41,9 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
     var job = new CampaignJob(
         JobId:       Guid.NewGuid().ToString("N")[..12],
         ClientId:    clientId,
-        CampaignId:  campaignId,
         Voice:       voice,
-        Template:    template,
-        PhoneColumn: form["phone_column"].ToString(),
+        PhoneColumn: form["phone_column"].FirstOrDefault() ?? "telefono",
+        TextColumn:  form["text_column"].FirstOrDefault()  ?? "Message",
         FileBytes:   ms.ToArray(),
         FileName:    file.FileName,
         LengthScale: float.TryParse(form["length_scale"], out var ls) ? ls : 0.95f,
@@ -60,10 +55,9 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
     // Registrar estado antes de encolar
     CampaignProcessor.Statuses[job.JobId] = new CampaignStatus
     {
-        JobId      = job.JobId,
-        ClientId   = clientId,
-        CampaignId = campaignId,
-        State      = "queued",
+        JobId     = job.JobId,
+        ClientId  = clientId,
+        State     = "queued",
     };
 
     await CampaignProcessor.Queue.Writer.WriteAsync(job);
@@ -72,7 +66,6 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
     {
         job_id     = job.JobId,
         client_id  = clientId,
-        campaign_id = campaignId,
         status     = "queued",
         status_url = $"/campaigns/{job.JobId}",
     });

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Text;
 using System.Threading.Channels;
 using TtsWorker.Models;
 
@@ -42,8 +41,8 @@ class CampaignProcessor(
                 throw new InvalidOperationException("Archivo sin filas de datos.");
 
             var batches = ExcelReader.Chunk(rows, _batchSize).ToList();
-            status.State       = "synthesizing";
-            status.TotalRows   = rows.Count;
+            status.State        = "synthesizing";
+            status.TotalRows    = rows.Count;
             status.TotalBatches = batches.Count;
 
             logger.LogInformation("Job {JobId}: {Rows} filas → {Batches} lotes",
@@ -58,33 +57,50 @@ class CampaignProcessor(
 
                 var batch   = batches[b];
                 var batchId = $"{job.JobId}_b{b + 1:D3}";
-                var csv     = BuildCsv(batch);
+
+                // Armar la lista de audios pendientes para este lote
+                var pendingAudio = batch.Select(row => new PendingAudioItem
+                {
+                    Recipient = row.GetValueOrDefault(job.PhoneColumn, "").Trim(),
+                    Text      = row.GetValueOrDefault(job.TextColumn, "").Trim(),
+                }).Where(item => !string.IsNullOrEmpty(item.Text)).ToList();
+
+                var request = new BatchRunRequest
+                {
+                    JobId        = batchId,
+                    ClientId     = job.ClientId,
+                    VoiceName    = job.Voice,
+                    PendingAudio = pendingAudio,
+                    LengthScale  = job.LengthScale,
+                    NoiseScale   = job.NoiseScale,
+                    NoiseW       = job.NoiseW,
+                    PauseMs      = job.PauseMs,
+                };
 
                 TtsManifest manifest;
                 try
                 {
-                    manifest = await ttsClient.GenerateBatchAsync(
-                        job, csv, $"batch_{b + 1}.csv", batchId, ct);
+                    manifest = await ttsClient.RunBatchAsync(request, ct);
                 }
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Batch {BatchId} falló, reintentando...", batchId);
                     await Task.Delay(2000, ct);
-                    manifest = await ttsClient.GenerateBatchAsync(
-                        job, csv, $"batch_{b + 1}.csv", batchId, ct);
+                    manifest = await ttsClient.RunBatchAsync(request, ct);
                 }
 
                 foreach (var audio in manifest.Audios.Where(a => a.Status == "ok" && a.AudioId != null))
                 {
+                    var phone = !string.IsNullOrEmpty(audio.Recipient) ? audio.Recipient : audio.Phone;
                     pending.Add(new DialerMessage
                     {
                         JobId      = job.JobId,
                         ClientId   = job.ClientId,
-                        CampaignId = job.CampaignId,
+                        CampaignId = batchId,
                         BatchId    = batchId,
-                        Phone      = audio.Phone,
+                        Phone      = phone,
                         AudioId    = audio.AudioId!,
-                        AudioUrl   = $"{_ttsBaseUrl}/v1/audio/{job.ClientId}/{job.CampaignId}/{audio.AudioId}",
+                        AudioUrl   = $"{_ttsBaseUrl}/v1/audio/{job.ClientId}/{batchId}/{audio.AudioId}",
                         DurationMs = audio.DurationMs,
                         RowIndex   = audio.RowIndex,
                         TextHash   = audio.TextHash,
@@ -109,24 +125,23 @@ class CampaignProcessor(
             }
 
             // ── Fase 3: publicar a RabbitMQ ───────────────────────────────────
-            // La síntesis ya terminó. Si Rabbit falla aquí los audios están en disco;
-            // el estado queda "publishing_failed" para reintentar solo este paso.
             status.State = "publishing";
-            logger.LogInformation("Job {JobId}: publicando {N} mensajes a RabbitMQ", job.JobId, pending.Count);
+            logger.LogInformation("Job {JobId}: publicando {N} mensajes a RabbitMQ",
+                job.JobId, pending.Count);
 
             await using var rabbit = await CreateRabbitAsync(ct);
             foreach (var msg in pending)
                 await rabbit.PublishAsync(msg, ct);
 
             status.State = "done";
-            logger.LogInformation("Job {JobId}: completado. {Ok} audios publicados.", job.JobId, pending.Count);
+            logger.LogInformation("Job {JobId}: completado — {N} audios publicados.",
+                job.JobId, pending.Count);
         }
         catch (Exception ex) when (status.State == "publishing")
         {
-            // TTS terminó bien; solo falló RabbitMQ
             status.State = "publishing_failed";
             status.Error = $"TTS completado. Error publicando a RabbitMQ: {ex.Message}";
-            logger.LogError(ex, "Job {JobId}: síntesis OK pero fallo en RabbitMQ", job.JobId);
+            logger.LogError(ex, "Job {JobId}: fallo en RabbitMQ", job.JobId);
         }
         catch (Exception ex)
         {
@@ -139,22 +154,6 @@ class CampaignProcessor(
             status.CompletedAt = DateTime.UtcNow;
         }
     }
-
-    static byte[] BuildCsv(List<Dictionary<string, string>> rows)
-    {
-        if (rows.Count == 0) return [];
-        var sb = new StringBuilder();
-        var headers = rows[0].Keys.ToList();
-        sb.AppendLine(string.Join(",", headers.Select(EscapeCsv)));
-        foreach (var row in rows)
-            sb.AppendLine(string.Join(",", headers.Select(h => EscapeCsv(row.GetValueOrDefault(h, "")))));
-        return Encoding.UTF8.GetBytes(sb.ToString());
-    }
-
-    static string EscapeCsv(string value) =>
-        value.Contains(',') || value.Contains('"') || value.Contains('\n')
-            ? $"\"{value.Replace("\"", "\"\"")}\""
-            : value;
 
     async Task<RabbitPublisher> CreateRabbitAsync(CancellationToken ct) =>
         await RabbitPublisher.CreateAsync(
