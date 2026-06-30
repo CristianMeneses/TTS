@@ -100,20 +100,21 @@ def _synthesize_with_segment_cache(
     length_scale: float,
     noise_scale: float,
     noise_w: float,
+    namespace: str = "",
 ) -> tuple[list[bytes], int, int]:
     wav_blobs = []
     hits = 0
     misses = 0
 
     for seg in segments:
-        key = cache_module.segment_key(seg, voice_name, length_scale, noise_scale, noise_w)
-        cached = cache_module.get_segment(key)
+        key = cache_module.segment_key(seg, voice_name, length_scale, noise_scale, noise_w, namespace=namespace)
+        cached = cache_module.get_segment(key, namespace=namespace)
         if cached:
             wav_blobs.append(cached)
             hits += 1
         else:
             wav = _synthesize_text(voice, seg, syn_config)
-            cache_module.put_segment(key, wav)
+            cache_module.put_segment(key, wav, namespace=namespace)
             wav_blobs.append(wav)
             misses += 1
 
@@ -160,6 +161,7 @@ def generate_audio(
     noise_w: float = 0.9,
     pause_ms: int = 150,
     output_sample_rate: Optional[int] = None,
+    namespace: str = "",
 ) -> tuple[bytes, dict]:
     voice = load_voice(model_path, config_path)
     syn_config = SynthesisConfig(
@@ -173,7 +175,7 @@ def generate_audio(
 
     t_inference_start = time.perf_counter()
     wav_blobs, cache_hits, cache_misses = _synthesize_with_segment_cache(
-        voice, voice_name, segments, syn_config, length_scale, noise_scale, noise_w
+        voice, voice_name, segments, syn_config, length_scale, noise_scale, noise_w, namespace=namespace
     )
     t_inference_end = time.perf_counter()
 
@@ -221,6 +223,7 @@ def generate_audio_from_template(
     noise_w: float = 0.9,
     pause_ms: int = 150,
     output_sample_rate: Optional[int] = None,
+    namespace: str = "",
 ) -> tuple[bytes, dict]:
     voice = load_voice(model_path, config_path)
     syn_config = SynthesisConfig(
@@ -239,14 +242,14 @@ def generate_audio_from_template(
             text = content.strip()
             if not text:
                 continue
-            key = cache_module.segment_key(text, voice_name, length_scale, noise_scale, noise_w)
-            cached = cache_module.get_segment(key)
+            key = cache_module.segment_key(text, voice_name, length_scale, noise_scale, noise_w, namespace=namespace)
+            cached = cache_module.get_segment(key, namespace=namespace)
             if cached:
                 wav_blobs.append(cached)
                 cache_hits += 1
             else:
                 wav = _synthesize_text(voice, text, syn_config)
-                cache_module.put_segment(key, wav)
+                cache_module.put_segment(key, wav, namespace=namespace)
                 wav_blobs.append(wav)
                 cache_misses += 1
         else:

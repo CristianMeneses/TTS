@@ -1,8 +1,10 @@
 import asyncio
 import csv
+import hashlib
 import io
 import json
 import os
+import re
 import statistics
 import threading
 import time
@@ -10,6 +12,7 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -17,6 +20,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+import audio_format
 import cache
 import tts_engine
 import kokoro_engine
@@ -25,6 +29,12 @@ MODELS_DIR = Path("models")
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Storage de los audios de producción (endpoint /v1). NO debe estar en OneDrive.
+# Estructura: STORAGE_DIR/{client_id}/{campaign_id}/{session_id}/audios/{audio_id}.wav
+_storage_base = os.environ.get("TTS_STORAGE_DIR") or os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
+STORAGE_DIR = Path(_storage_base) / "tts_output"
+STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Concurrencia del batch. En CPU de 16 núcleos el throughput de Piper sube hasta ~6-8
 # inferencias en paralelo (cada inferencia no satura todos los núcleos). Configurable
@@ -84,9 +94,10 @@ def _generate_cached(
     noise_w: float,
     pause_ms: int,
     output_sample_rate: int = 8000,
+    namespace: str = "",
 ) -> tuple[bytes, dict, bool]:
-    key = cache.cache_key(text, voice_name, length_scale, noise_scale, noise_w, pause_ms, output_sample_rate)
-    cached = cache.get(key)
+    key = cache.cache_key(text, voice_name, length_scale, noise_scale, noise_w, pause_ms, output_sample_rate, namespace=namespace)
+    cached = cache.get(key, namespace=namespace)
     if cached:
         return cached, {"total_ms": 0, "model_inference_ms": 0, "file_write_ms": 0, "segments": 0, "cache_hits": 0, "cache_misses": 0}, True
 
@@ -99,6 +110,7 @@ def _generate_cached(
             speed=speed,
             pause_ms=pause_ms,
             output_sample_rate=output_sample_rate,
+            namespace=namespace,
         )
     else:
         wav, timing = tts_engine.generate_audio(
@@ -111,8 +123,9 @@ def _generate_cached(
             noise_w=noise_w,
             pause_ms=pause_ms,
             output_sample_rate=output_sample_rate,
+            namespace=namespace,
         )
-    cache.put(key, wav)
+    cache.put(key, wav, namespace=namespace)
     return wav, timing, False
 
 
@@ -127,6 +140,7 @@ def _generate_batch_row_cached(
     noise_w: float,
     pause_ms: int,
     output_sample_rate: int = 8000,
+    namespace: str = "",
 ) -> tuple[bytes, dict, bool]:
     """Versión de _generate_cached para batch: usa el texto ensamblado como clave de caché."""
     full_text = "".join(
@@ -140,11 +154,11 @@ def _generate_batch_row_cached(
     if len(template_parts) == 1 and template_parts[0][0] == "var":
         return _generate_cached(
             full_text, voice_name, model_path, config_path,
-            length_scale, noise_scale, noise_w, pause_ms, output_sample_rate,
+            length_scale, noise_scale, noise_w, pause_ms, output_sample_rate, namespace=namespace,
         )
 
-    key = cache.cache_key(full_text, voice_name, length_scale, noise_scale, noise_w, pause_ms, output_sample_rate)
-    cached = cache.get(key)
+    key = cache.cache_key(full_text, voice_name, length_scale, noise_scale, noise_w, pause_ms, output_sample_rate, namespace=namespace)
+    cached = cache.get(key, namespace=namespace)
     if cached:
         return cached, {"total_ms": 0, "model_inference_ms": 0, "segments": 0, "cache_hits": 0, "cache_misses": 0}, True
 
@@ -152,13 +166,15 @@ def _generate_batch_row_cached(
         speed = round(1.0 / max(length_scale, 0.5), 3)
         wav, timing = kokoro_engine.generate_audio_from_template(
             template_parts, row, voice_name, speed=speed, output_sample_rate=output_sample_rate,
+            namespace=namespace,
         )
     else:
         wav, timing = tts_engine.generate_audio_from_template(
             model_path, template_parts, row, voice_name,
             config_path, length_scale, noise_scale, noise_w, pause_ms, output_sample_rate,
+            namespace=namespace,
         )
-    cache.put(key, wav)
+    cache.put(key, wav, namespace=namespace)
     return wav, timing, False
 
 
@@ -405,6 +421,209 @@ async def tts_zip(key: str):
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename=batch_{key}.zip"},
     )
+
+
+# ── API de producción /v1 — generación a disco + recuperación ────────────────
+# Diseñada para el worker .NET: divide el Excel en lotes de ~500, llama a
+# /v1/batch/generate por lote (guarda los audios μ-law y devuelve un manifiesto
+# JSON), y recupera cada audio por /v1/audio/... mientras procesa el siguiente lote.
+
+_ID_RE = re.compile(r"[A-Za-z0-9._\-]{1,128}")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{32}")
+_PHONE_CANDIDATES = [
+    "telefono", "teléfono", "phone", "celular", "movil", "móvil",
+    "msisdn", "numero", "número", "tel", "telephone", "cel",
+]
+
+
+def _safe_component(value: str, label: str) -> str:
+    value = (value or "").strip()
+    if value in (".", "..") or not _ID_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail=f"{label} inválido: use solo letras, números, '.', '_' o '-' (sin '/')")
+    return value
+
+
+def _campaign_dir(client_id: str, campaign_id: str) -> Path:
+    c = _safe_component(client_id, "client_id")
+    ca = _safe_component(campaign_id, "campaign_id")
+    d = (STORAGE_DIR / c / ca).resolve()
+    root = STORAGE_DIR.resolve()
+    if root != d and root not in d.parents:
+        raise HTTPException(status_code=400, detail="Ruta de campaña inválida")
+    return d
+
+
+def _detect_phone_column(headers: list[str], phone_column: str) -> Optional[str]:
+    low = {h.lower().strip(): h for h in headers}
+    if phone_column:
+        if phone_column in headers:
+            return phone_column
+        if phone_column.lower().strip() in low:
+            return low[phone_column.lower().strip()]
+    for cand in _PHONE_CANDIDATES:
+        if cand in low:
+            return low[cand]
+    return None
+
+
+def _wav_duration_ms(pcm_wav_bytes: bytes) -> int:
+    import wave
+    with wave.open(io.BytesIO(pcm_wav_bytes), "rb") as wf:
+        frames = wf.getnframes()
+        rate = wf.getframerate() or 1
+    return int(round(frames / rate * 1000))
+
+
+def _generate_row_to_disk(
+    i: int, row: dict, template_parts: list, voice: str,
+    model_path: str, config_path: Optional[str],
+    length_scale: float, noise_scale: float, noise_w: float, pause_ms: int,
+    namespace: str, audios_dir: Path, phone_col: Optional[str], include_text: bool,
+) -> dict:
+    """Sintetiza una fila, convierte a μ-law, la guarda en disco y devuelve su metadata.
+    Corre dentro del executor (CPU/IO fuera del event loop)."""
+    full_text = "".join(
+        content if ptype == "fixed" else str(row.get(content, ""))
+        for ptype, content in template_parts
+    )
+    phone = str(row.get(phone_col, "")).strip() if phone_col else ""
+
+    wav_pcm, timing, from_cache = _generate_batch_row_cached(
+        template_parts, row, voice, model_path, config_path,
+        length_scale, noise_scale, noise_w, pause_ms, 8000, namespace=namespace,
+    )
+    mulaw = audio_format.to_mulaw_wav(wav_pcm)
+
+    audio_id = uuid.uuid4().hex
+    (audios_dir / f"{audio_id}.wav").write_bytes(mulaw)
+
+    entry = {
+        "audio_id": audio_id,
+        "row_index": i + 1,
+        "phone": phone,
+        "status": "ok",
+        "filename": f"{audio_id}.wav",
+        "duration_ms": _wav_duration_ms(wav_pcm),
+        "size_bytes": len(mulaw),
+        "sha256": hashlib.sha256(mulaw).hexdigest(),
+        "from_cache": from_cache,
+        "timing_ms": timing.get("total_ms", 0),
+        "text_hash": hashlib.sha256(full_text.encode("utf-8")).hexdigest()[:16],
+    }
+    if include_text:
+        entry["text"] = full_text
+    return entry
+
+
+@app.post("/v1/batch/generate")
+async def v1_batch_generate(
+    file: Annotated[UploadFile, File()],
+    template: Annotated[str, Form()],
+    voice: Annotated[str, Form()],
+    client_id: Annotated[str, Form()],
+    campaign_id: Annotated[str, Form()],
+    phone_column: Annotated[str, Form()] = "",
+    batch_id: Annotated[str, Form()] = "",
+    length_scale: Annotated[float, Form()] = 0.95,
+    noise_scale: Annotated[float, Form()] = 0.85,
+    noise_w: Annotated[float, Form()] = 0.9,
+    pause_ms: Annotated[int, Form()] = 150,
+    include_text: Annotated[bool, Form()] = True,
+):
+    """Procesa un lote (≤~500 filas): sintetiza, guarda μ-law en disco y devuelve manifiesto JSON."""
+    model_path, config_path = _resolve_voice(voice)
+
+    content = await file.read()
+    rows = _read_rows(file.filename or "data.csv", content)
+    if not rows:
+        raise HTTPException(status_code=400, detail="Archivo vacío o sin filas de datos")
+
+    template_parts = tts_engine.parse_template(template)
+    namespace = f"{_safe_component(client_id, 'client_id')}|{_safe_component(campaign_id, 'campaign_id')}"
+    headers = list(rows[0].keys())
+    phone_col = _detect_phone_column(headers, phone_column)
+
+    campaign_dir = _campaign_dir(client_id, campaign_id)
+    audios_dir = campaign_dir / "audios"
+    audios_dir.mkdir(parents=True, exist_ok=True)
+
+    bid = _safe_component(batch_id, "batch_id") if batch_id else uuid.uuid4().hex[:12]
+
+    # Metadata de la voz para el manifiesto
+    vinfo = next((v for v in (tts_engine.list_available_voices(str(MODELS_DIR)) + kokoro_engine.list_voices())
+                  if v["name"] == voice), {})
+
+    loop = asyncio.get_event_loop()
+    sem = asyncio.Semaphore(BATCH_CONCURRENCY)
+    t0 = time.perf_counter()
+
+    async def process(i: int, row: dict):
+        async with sem:
+            try:
+                return await loop.run_in_executor(
+                    executor, _generate_row_to_disk,
+                    i, row, template_parts, voice, model_path, config_path,
+                    length_scale, noise_scale, noise_w, pause_ms,
+                    namespace, audios_dir, phone_col, include_text,
+                )
+            except Exception as e:
+                phone = str(row.get(phone_col, "")).strip() if phone_col else ""
+                return {"row_index": i + 1, "phone": phone, "status": "error", "error": str(e)}
+
+    audios = await asyncio.gather(*[process(i, row) for i, row in enumerate(rows)])
+    total_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    ok = [a for a in audios if a.get("status") == "ok"]
+    base_url = f"/v1/audio/{client_id}/{campaign_id}"
+    for a in ok:
+        a["retrieval_url"] = f"{base_url}/{a['audio_id']}"
+
+    manifest = {
+        "client_id": client_id,
+        "campaign_id": campaign_id,
+        "batch_id": bid,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "voice": {
+            "name": voice,
+            "engine": vinfo.get("engine", "kokoro" if voice.startswith("kokoro:") else "piper"),
+            "lang_code": vinfo.get("lang_code"),
+        },
+        "audio_format": {
+            "codec": "pcm_mulaw", "container": "wav",
+            "sample_rate": 8000, "channels": 1, "bits": 8, "bitrate": 64000,
+        },
+        "params": {
+            "length_scale": length_scale, "noise_scale": noise_scale,
+            "noise_w": noise_w, "pause_ms": pause_ms,
+        },
+        "phone_column": phone_col,
+        "summary": {
+            "total": len(rows),
+            "successful": len(ok),
+            "errors": len(rows) - len(ok),
+            "from_cache": sum(1 for a in ok if a.get("from_cache")),
+            "total_ms": total_ms,
+            "avg_ms": round(total_ms / len(rows), 2) if rows else 0,
+        },
+        "retrieval_url_template": base_url + "/{audio_id}",
+        "audios": audios,
+    }
+
+    return JSONResponse(manifest)
+
+
+@app.get("/v1/audio/{client_id}/{campaign_id}/{audio_id}")
+async def v1_get_audio(client_id: str, campaign_id: str, audio_id: str):
+    """Recupera un audio μ-law generado, por su audio_id. Validado contra path-traversal."""
+    if not _UUID_RE.fullmatch(audio_id):
+        raise HTTPException(status_code=400, detail="audio_id inválido")
+    campaign_dir = _campaign_dir(client_id, campaign_id)
+    path = (campaign_dir / "audios" / f"{audio_id}.wav").resolve()
+    if STORAGE_DIR.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Ruta inválida")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Audio no encontrado")
+    return FileResponse(str(path), media_type="audio/wav", filename=f"{audio_id}.wav")
 
 
 def _warmup_segment(

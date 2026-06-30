@@ -5,3 +5,4 @@ python-multipart
 aiofiles
 kokoro-onnx
 openpyxl
+audioop-lts; python_version >= "3.13"

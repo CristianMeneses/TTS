@@ -31,6 +31,25 @@ def _normalize(text: str) -> str:
     return re.sub(r"^[\s.,;:!?¡¿]+|[\s.,;:!?¡¿]+$", "", text.strip().lower())
 
 
+# ── Namespacing por cliente+campaña ──────────────────────────────────────────
+# namespace="" mantiene el layout plano original (lab / audio individual).
+# namespace!="" enruta a un subdirectorio propio y entra en el hash de la clave,
+# garantizando aislamiento total (un audio de campaña A nunca pega en campaña B).
+
+def _ns_dir(namespace: str) -> Path:
+    return CACHE_DIR / f"ns_{hashlib.sha256(namespace.encode()).hexdigest()[:16]}"
+
+
+def _full_dir(namespace: str) -> Path:
+    return CACHE_DIR if not namespace else _ns_dir(namespace)
+
+
+def _seg_dir(namespace: str) -> Path:
+    return SEGMENT_DIR if not namespace else _ns_dir(namespace) / "segments"
+
+
+# ── Caché en memoria (LRU) ────────────────────────────────────────────────────
+
 def _mem_get(store: "OrderedDict[str, bytes]", key: str) -> Optional[bytes]:
     """Lee de RAM y marca como usado recientemente (LRU)."""
     with _lock:
@@ -51,23 +70,25 @@ def _mem_put(store: "OrderedDict[str, bytes]", key: str, data: bytes, limit: int
 
 # ── Claves ───────────────────────────────────────────────────────────────────
 
-def cache_key(text: str, voice_name: str, length_scale: float, noise_scale: float, noise_w: float, pause_ms: int, output_sample_rate: int = 22050) -> str:
-    raw = f"{text}|{voice_name}|{length_scale}|{noise_scale}|{noise_w}|{pause_ms}|{output_sample_rate}"
+def cache_key(text: str, voice_name: str, length_scale: float, noise_scale: float, noise_w: float, pause_ms: int, output_sample_rate: int = 22050, namespace: str = "") -> str:
+    prefix = f"ns:{namespace}|" if namespace else ""
+    raw = f"{prefix}{text}|{voice_name}|{length_scale}|{noise_scale}|{noise_w}|{pause_ms}|{output_sample_rate}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def segment_key(text: str, voice_name: str, length_scale: float, noise_scale: float, noise_w: float) -> str:
-    raw = f"seg|{_normalize(text)}|{voice_name}|{length_scale}|{noise_scale}|{noise_w}"
+def segment_key(text: str, voice_name: str, length_scale: float, noise_scale: float, noise_w: float, namespace: str = "") -> str:
+    prefix = f"ns:{namespace}|" if namespace else ""
+    raw = f"{prefix}seg|{_normalize(text)}|{voice_name}|{length_scale}|{noise_scale}|{noise_w}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 # ── Caché de audio completo ──────────────────────────────────────────────────
 
-def get(key: str) -> Optional[bytes]:
+def get(key: str, namespace: str = "") -> Optional[bytes]:
     cached = _mem_get(_full_mem, key)
     if cached is not None:
         return cached
-    path = CACHE_DIR / f"{key}.wav"
+    path = _full_dir(namespace) / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
         _mem_put(_full_mem, key, data, _FULL_MEM_LIMIT)
@@ -75,18 +96,20 @@ def get(key: str) -> Optional[bytes]:
     return None
 
 
-def put(key: str, wav_bytes: bytes) -> None:
+def put(key: str, wav_bytes: bytes, namespace: str = "") -> None:
     _mem_put(_full_mem, key, wav_bytes, _FULL_MEM_LIMIT)
-    threading.Thread(target=_write_safe, args=(CACHE_DIR / f"{key}.wav", wav_bytes), daemon=True).start()
+    d = _full_dir(namespace)
+    d.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
 
 
 # ── Caché de segmentos ───────────────────────────────────────────────────────
 
-def get_segment(key: str) -> Optional[bytes]:
+def get_segment(key: str, namespace: str = "") -> Optional[bytes]:
     cached = _mem_get(_seg_mem, key)
     if cached is not None:
         return cached
-    path = SEGMENT_DIR / f"{key}.wav"
+    path = _seg_dir(namespace) / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
         _mem_put(_seg_mem, key, data, _SEG_MEM_LIMIT)
@@ -94,9 +117,11 @@ def get_segment(key: str) -> Optional[bytes]:
     return None
 
 
-def put_segment(key: str, wav_bytes: bytes) -> None:
+def put_segment(key: str, wav_bytes: bytes, namespace: str = "") -> None:
     _mem_put(_seg_mem, key, wav_bytes, _SEG_MEM_LIMIT)
-    threading.Thread(target=_write_safe, args=(SEGMENT_DIR / f"{key}.wav", wav_bytes), daemon=True).start()
+    d = _seg_dir(namespace)
+    d.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
 
 
 def _write_safe(path: Path, data: bytes) -> None:
@@ -110,11 +135,13 @@ def _write_safe(path: Path, data: bytes) -> None:
 # ── Stats y limpieza ─────────────────────────────────────────────────────────
 
 def stats() -> dict:
-    full_files = list(CACHE_DIR.glob("*.wav"))
-    seg_files = list(SEGMENT_DIR.glob("*.wav"))
-    total_bytes = sum(f.stat().st_size for f in full_files + seg_files)
+    """Stats globales: recorre todo el árbol (incluye subdirectorios de campaña)."""
+    all_wav = list(CACHE_DIR.rglob("*.wav"))
+    seg_files = [f for f in all_wav if f.parent.name == "segments"]
+    full_files = [f for f in all_wav if f.parent.name != "segments"]
+    total_bytes = sum(f.stat().st_size for f in all_wav)
     return {
-        "entries": len(full_files) + len(seg_files),
+        "entries": len(all_wav),
         "full_audio_entries": len(full_files),
         "segment_entries": len(seg_files),
         "mem_full": len(_full_mem),
@@ -124,19 +151,27 @@ def stats() -> dict:
     }
 
 
-def clear() -> int:
-    """Borra todo el caché en disco y RAM. Resiliente a archivos bloqueados."""
+def clear(namespace: Optional[str] = None) -> int:
+    """Borra el caché en disco y RAM. Resiliente a archivos bloqueados.
+
+    namespace=None  → borra TODO (todas las campañas + layout del lab).
+    namespace="..." → borra solo esa campaña.
+    """
+    if namespace:
+        base = _ns_dir(namespace)
+        targets = list(base.rglob("*.wav")) + list(base.rglob("*.json"))
+    else:
+        targets = list(CACHE_DIR.rglob("*.wav")) + list(CACHE_DIR.rglob("*.json"))
+
     deleted = 0
-    targets = (
-        list(CACHE_DIR.glob("*.wav")) + list(SEGMENT_DIR.glob("*.wav"))
-        + list(CACHE_DIR.glob("*.json")) + list(SEGMENT_DIR.glob("*.json"))
-    )
     for f in targets:
         try:
             f.unlink()
             deleted += 1
         except OSError:
             pass  # archivo bloqueado/sincronizando — se ignora
+    # La RAM se vacía completa: las claves son hashes y no se pueden filtrar por
+    # namespace; es un caché, se reconstruye on-demand.
     with _lock:
         _full_mem.clear()
         _seg_mem.clear()

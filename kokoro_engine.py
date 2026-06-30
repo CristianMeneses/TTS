@@ -151,6 +151,7 @@ def _synthesize_with_segment_cache(
     voice_id: str,
     speed: float,
     lang: str,
+    namespace: str = "",
 ) -> tuple[list[bytes], int, int]:
     kokoro = load_kokoro()
     wav_blobs = []
@@ -158,14 +159,14 @@ def _synthesize_with_segment_cache(
     misses = 0
     for seg in segments:
         # speed como equivalente a length_scale; noise_scale/noise_w no aplican → 0
-        key = cache_module.segment_key(seg, voice_name, speed, 0, 0)
-        cached = cache_module.get_segment(key)
+        key = cache_module.segment_key(seg, voice_name, speed, 0, 0, namespace=namespace)
+        cached = cache_module.get_segment(key, namespace=namespace)
         if cached:
             wav_blobs.append(cached)
             hits += 1
         else:
             wav = _synthesize_segment(kokoro, seg, voice_id, speed, lang)
-            cache_module.put_segment(key, wav)
+            cache_module.put_segment(key, wav, namespace=namespace)
             wav_blobs.append(wav)
             misses += 1
     return wav_blobs, hits, misses
@@ -180,6 +181,7 @@ def generate_audio(
     lang: Optional[str] = None,
     pause_ms: int = 150,
     output_sample_rate: Optional[int] = None,
+    namespace: str = "",
 ) -> tuple[bytes, dict]:
     if lang is None:
         lang = voice_lang(voice_id)
@@ -190,7 +192,7 @@ def generate_audio(
 
     t_inf_start = time.perf_counter()
     wav_blobs, cache_hits, cache_misses = _synthesize_with_segment_cache(
-        voice_name, segments, voice_id, speed, lang
+        voice_name, segments, voice_id, speed, lang, namespace=namespace
     )
     t_inf_end = time.perf_counter()
 
@@ -216,6 +218,7 @@ def generate_audio_from_template(
     speed: float = 1.0,
     lang: Optional[str] = None,
     output_sample_rate: Optional[int] = None,
+    namespace: str = "",
 ) -> tuple[bytes, dict]:
     voice_id = voice_name[7:] if voice_name.startswith("kokoro:") else voice_name
     if lang is None:
@@ -232,14 +235,14 @@ def generate_audio_from_template(
             text = content.strip()
             if not text:
                 continue
-            key = cache_module.segment_key(text, voice_name, speed, 0, 0)
-            cached = cache_module.get_segment(key)
+            key = cache_module.segment_key(text, voice_name, speed, 0, 0, namespace=namespace)
+            cached = cache_module.get_segment(key, namespace=namespace)
             if cached:
                 wav_blobs.append(cached)
                 cache_hits += 1
             else:
                 wav = _synthesize_segment(kokoro, text, voice_id, speed, lang)
-                cache_module.put_segment(key, wav)
+                cache_module.put_segment(key, wav, namespace=namespace)
                 wav_blobs.append(wav)
                 cache_misses += 1
         else:
