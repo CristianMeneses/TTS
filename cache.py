@@ -85,19 +85,21 @@ def segment_key(text: str, voice_name: str, length_scale: float, noise_scale: fl
 # ── Caché de audio completo ──────────────────────────────────────────────────
 
 def get(key: str, namespace: str = "") -> Optional[bytes]:
-    cached = _mem_get(_full_mem, key)
+    mem_key = f"{namespace}|{key}" if namespace else key
+    cached = _mem_get(_full_mem, mem_key)
     if cached is not None:
         return cached
     path = _full_dir(namespace) / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
-        _mem_put(_full_mem, key, data, _FULL_MEM_LIMIT)
+        _mem_put(_full_mem, mem_key, data, _FULL_MEM_LIMIT)
         return data
     return None
 
 
 def put(key: str, wav_bytes: bytes, namespace: str = "") -> None:
-    _mem_put(_full_mem, key, wav_bytes, _FULL_MEM_LIMIT)
+    mem_key = f"{namespace}|{key}" if namespace else key
+    _mem_put(_full_mem, mem_key, wav_bytes, _FULL_MEM_LIMIT)
     d = _full_dir(namespace)
     d.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
@@ -106,19 +108,21 @@ def put(key: str, wav_bytes: bytes, namespace: str = "") -> None:
 # ── Caché de segmentos ───────────────────────────────────────────────────────
 
 def get_segment(key: str, namespace: str = "") -> Optional[bytes]:
-    cached = _mem_get(_seg_mem, key)
+    mem_key = f"{namespace}|{key}" if namespace else key
+    cached = _mem_get(_seg_mem, mem_key)
     if cached is not None:
         return cached
     path = _seg_dir(namespace) / f"{key}.wav"
     if path.exists():
         data = path.read_bytes()
-        _mem_put(_seg_mem, key, data, _SEG_MEM_LIMIT)
+        _mem_put(_seg_mem, mem_key, data, _SEG_MEM_LIMIT)
         return data
     return None
 
 
 def put_segment(key: str, wav_bytes: bytes, namespace: str = "") -> None:
-    _mem_put(_seg_mem, key, wav_bytes, _SEG_MEM_LIMIT)
+    mem_key = f"{namespace}|{key}" if namespace else key
+    _mem_put(_seg_mem, mem_key, wav_bytes, _SEG_MEM_LIMIT)
     d = _seg_dir(namespace)
     d.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
