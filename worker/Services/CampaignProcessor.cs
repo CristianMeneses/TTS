@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Threading.Channels;
 using TtsWorker.Models;
 
@@ -124,24 +125,22 @@ class CampaignProcessor(
                     manifest.Summary.Successful, manifest.Summary.Errors, manifest.Summary.TotalMs);
             }
 
-            // ── Fase 3: publicar a RabbitMQ ───────────────────────────────────
+            // ── Fase 3: guardar resultado en JSON (modo prueba, sin RabbitMQ) ──
             status.State = "publishing";
-            logger.LogInformation("Job {JobId}: publicando {N} mensajes a RabbitMQ",
-                job.JobId, pending.Count);
 
-            await using var rabbit = await CreateRabbitAsync(ct);
-            foreach (var msg in pending)
-                await rabbit.PublishAsync(msg, ct);
+            var outputDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "tts_output", job.ClientId, job.JobId);
+            Directory.CreateDirectory(outputDir);
 
-            status.State = "done";
-            logger.LogInformation("Job {JobId}: completado — {N} audios publicados.",
-                job.JobId, pending.Count);
-        }
-        catch (Exception ex) when (status.State == "publishing")
-        {
-            status.State = "publishing_failed";
-            status.Error = $"TTS completado. Error publicando a RabbitMQ: {ex.Message}";
-            logger.LogError(ex, "Job {JobId}: fallo en RabbitMQ", job.JobId);
+            var outputFile = Path.Combine(outputDir, "messages.json");
+            await File.WriteAllTextAsync(outputFile,
+                JsonSerializer.Serialize(pending, new JsonSerializerOptions { WriteIndented = true }), ct);
+
+            status.OutputFile = outputFile;
+            status.State      = "done";
+            logger.LogInformation("Job {JobId}: completado — {N} mensajes guardados en {File}",
+                job.JobId, pending.Count, outputFile);
         }
         catch (Exception ex)
         {
@@ -155,14 +154,4 @@ class CampaignProcessor(
         }
     }
 
-    async Task<RabbitPublisher> CreateRabbitAsync(CancellationToken ct) =>
-        await RabbitPublisher.CreateAsync(
-            host:        config["RabbitMq:Host"]        ?? "localhost",
-            port:        config.GetValue("RabbitMq:Port", 5672),
-            user:        config["RabbitMq:User"]        ?? "guest",
-            password:    config["RabbitMq:Password"]    ?? "guest",
-            virtualHost: config["RabbitMq:VirtualHost"] ?? "/",
-            exchange:    config["RabbitMq:Exchange"]    ?? "tts",
-            routingKey:  config["RabbitMq:RoutingKey"]  ?? "dialer",
-            queueName:   config["RabbitMq:Queue"]       ?? "dialer_calls");
 }

@@ -14,6 +14,7 @@ class CampaignStatus
     public DateTime StartedAt { get; set; } = DateTime.UtcNow;
     public DateTime? CompletedAt { get; set; }
     public string? Error { get; set; }
+    public string? OutputFile { get; set; }
     public List<BatchSummary> Batches { get; set; } = [];
 }
 
