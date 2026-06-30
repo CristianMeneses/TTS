@@ -609,6 +609,12 @@ async def v1_batch_generate(
         "audios": audios,
     }
 
+    manifests_dir = campaign_dir / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    (manifests_dir / f"{bid}.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
     return JSONResponse(manifest)
 
 
@@ -624,6 +630,18 @@ async def v1_get_audio(client_id: str, campaign_id: str, audio_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Audio no encontrado")
     return FileResponse(str(path), media_type="audio/wav", filename=f"{audio_id}.wav")
+
+
+@app.get("/v1/batch/{client_id}/{campaign_id}/{batch_id}/manifest")
+async def v1_get_manifest(client_id: str, campaign_id: str, batch_id: str):
+    """Devuelve el manifiesto JSON de un lote previamente generado."""
+    campaign_dir = _campaign_dir(client_id, campaign_id)
+    path = (campaign_dir / "manifests" / f"{batch_id}.json").resolve()
+    if STORAGE_DIR.resolve() not in path.parents:
+        raise HTTPException(status_code=400, detail="Ruta inválida")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Manifiesto no encontrado")
+    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _warmup_segment(
