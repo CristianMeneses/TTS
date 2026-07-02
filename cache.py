@@ -16,11 +16,13 @@ SEGMENT_DIR = CACHE_DIR / "segments"
 
 # Cachés en memoria SEPARADOS — los audios completos (grandes) no deben expulsar
 # a los segmentos (pequeños y muy reutilizados).
-_FULL_MEM_LIMIT = 256        # audios completos: ~190KB c/u
-_SEG_MEM_LIMIT = 8192        # segmentos: pequeños, muchos hits → conservar muchos
+_FULL_MEM_LIMIT  = 256        # audios completos PCM: ~190KB c/u
+_SEG_MEM_LIMIT   = 8192       # segmentos: pequeños, muchos hits → conservar muchos
+_MULAW_MEM_LIMIT = 512        # μ-law: ~30KB c/u → podemos guardar más
 
-_full_mem: "OrderedDict[str, bytes]" = OrderedDict()
-_seg_mem: "OrderedDict[str, bytes]" = OrderedDict()
+_full_mem:  "OrderedDict[str, bytes]" = OrderedDict()
+_seg_mem:   "OrderedDict[str, bytes]" = OrderedDict()
+_mulaw_mem: "OrderedDict[str, bytes]" = OrderedDict()
 _lock = threading.Lock()
 
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -46,6 +48,10 @@ def _full_dir(namespace: str) -> Path:
 
 def _seg_dir(namespace: str) -> Path:
     return SEGMENT_DIR if not namespace else _ns_dir(namespace) / "segments"
+
+
+def _mulaw_dir(namespace: str) -> Path:
+    return CACHE_DIR / "mulaw" if not namespace else _ns_dir(namespace) / "mulaw"
 
 
 # ── Caché en memoria (LRU) ────────────────────────────────────────────────────
@@ -105,6 +111,30 @@ def put(key: str, wav_bytes: bytes, namespace: str = "") -> None:
     threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
 
 
+# ── Caché μ-law ──────────────────────────────────────────────────────────────
+# Mismo key que el PCM; se guarda en subdir mulaw/ para no confundir con PCM.
+
+def get_mulaw(key: str, namespace: str = "") -> Optional[bytes]:
+    mem_key = f"{namespace}|mu|{key}" if namespace else f"mu|{key}"
+    cached = _mem_get(_mulaw_mem, mem_key)
+    if cached is not None:
+        return cached
+    path = _mulaw_dir(namespace) / f"{key}.wav"
+    if path.exists():
+        data = path.read_bytes()
+        _mem_put(_mulaw_mem, mem_key, data, _MULAW_MEM_LIMIT)
+        return data
+    return None
+
+
+def put_mulaw(key: str, wav_bytes: bytes, namespace: str = "") -> None:
+    mem_key = f"{namespace}|mu|{key}" if namespace else f"mu|{key}"
+    _mem_put(_mulaw_mem, mem_key, wav_bytes, _MULAW_MEM_LIMIT)
+    d = _mulaw_dir(namespace)
+    d.mkdir(parents=True, exist_ok=True)
+    threading.Thread(target=_write_safe, args=(d / f"{key}.wav", wav_bytes), daemon=True).start()
+
+
 # ── Caché de segmentos ───────────────────────────────────────────────────────
 
 def get_segment(key: str, namespace: str = "") -> Optional[bytes]:
@@ -141,15 +171,18 @@ def _write_safe(path: Path, data: bytes) -> None:
 def stats() -> dict:
     """Stats globales: recorre todo el árbol (incluye subdirectorios de campaña)."""
     all_wav = list(CACHE_DIR.rglob("*.wav"))
-    seg_files = [f for f in all_wav if f.parent.name == "segments"]
-    full_files = [f for f in all_wav if f.parent.name != "segments"]
+    seg_files   = [f for f in all_wav if f.parent.name == "segments"]
+    mulaw_files = [f for f in all_wav if f.parent.name == "mulaw"]
+    full_files  = [f for f in all_wav if f.parent.name not in ("segments", "mulaw")]
     total_bytes = sum(f.stat().st_size for f in all_wav)
     return {
         "entries": len(all_wav),
         "full_audio_entries": len(full_files),
         "segment_entries": len(seg_files),
+        "mulaw_entries": len(mulaw_files),
         "mem_full": len(_full_mem),
         "mem_segments": len(_seg_mem),
+        "mem_mulaw": len(_mulaw_mem),
         "total_size_mb": round(total_bytes / 1024 / 1024, 3),
         "cache_dir": str(CACHE_DIR),
     }
@@ -179,4 +212,5 @@ def clear(namespace: Optional[str] = None) -> int:
     with _lock:
         _full_mem.clear()
         _seg_mem.clear()
+        _mulaw_mem.clear()
     return deleted

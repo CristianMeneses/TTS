@@ -1,0 +1,79 @@
+@workerUrl = http://localhost:8001
+@ttsUrl     = http://localhost:8000
+
+### Health check — worker .NET
+GET {{workerUrl}}/health
+Accept: application/json
+
+###
+
+### Health check — TTS Python
+GET {{ttsUrl}}/voices
+Accept: application/json
+
+###
+
+### Enviar campaña (multipart — requiere un archivo .xlsx real)
+# En VS Code con REST Client: cambia la ruta al xlsx que tengas
+POST {{workerUrl}}/campaigns
+Content-Type: multipart/form-data; boundary=----Boundary
+
+------Boundary
+Content-Disposition: form-data; name="client_id"
+
+cliente01
+------Boundary
+Content-Disposition: form-data; name="voice"
+
+es_MX-claude-high
+------Boundary
+Content-Disposition: form-data; name="phone_column"
+
+telefono
+------Boundary
+Content-Disposition: form-data; name="text_column"
+
+Message
+------Boundary
+Content-Disposition: form-data; name="file"; filename="test.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ./test_campaign.xlsx
+------Boundary--
+
+###
+
+### Ver estado de un job (reemplaza JOB_ID)
+# @name status
+GET {{workerUrl}}/campaigns/JOB_ID
+Accept: application/json
+
+###
+
+### Ver todos los jobs en memoria
+GET {{workerUrl}}/campaigns
+Accept: application/json
+
+###
+
+### Prueba directa al endpoint JSON del TTS (sin pasar por el worker)
+POST {{ttsUrl}}/v1/batch/run
+Content-Type: application/json
+
+{
+  "jobId": "job_directo_01",
+  "clientId": "cliente01",
+  "voiceName": "es_MX-claude-high",
+  "pendingAudio": [
+    { "recipient": "5512345678", "text": "Hola Juan, su pago vence manana." },
+    { "recipient": "5598765432", "text": "Hola Maria, su factura esta disponible." }
+  ]
+}
+
+###
+
+### Recuperar manifiesto (reemplaza JOB_ID)
+GET {{ttsUrl}}/v1/batch/cliente01/JOB_ID/JOB_ID/manifest
+Accept: application/json
+
+###

@@ -29,8 +29,8 @@ _storage_base = os.environ.get("TTS_STORAGE_DIR") or os.environ.get("LOCALAPPDAT
 STORAGE_DIR = Path(_storage_base) / "tts_output"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-BATCH_CONCURRENCY = int(os.environ.get("TTS_BATCH_CONCURRENCY", "6"))
-executor = ThreadPoolExecutor(max_workers=max(8, BATCH_CONCURRENCY + 2))
+BATCH_CONCURRENCY = int(os.environ.get("TTS_BATCH_CONCURRENCY", "8"))
+executor = ThreadPoolExecutor(max_workers=max(12, BATCH_CONCURRENCY + 4))
 
 _voice_map: dict[str, tuple[str, Optional[str]]] = {}
 _play_store: dict[str, bytes] = {}
@@ -246,14 +246,6 @@ def _campaign_dir(client_id: str, campaign_id: str) -> Path:
     return d
 
 
-def _wav_duration_ms(pcm_wav_bytes: bytes) -> int:
-    import wave
-    with wave.open(io.BytesIO(pcm_wav_bytes), "rb") as wf:
-        frames = wf.getnframes()
-        rate   = wf.getframerate() or 1
-    return int(round(frames / rate * 1000))
-
-
 def _generate_row_to_disk(
     i: int, row: dict, template_parts: list, voice: str,
     model_path: str, config_path: Optional[str],
@@ -266,25 +258,37 @@ def _generate_row_to_disk(
     )
     phone = str(row.get(phone_col, "")).strip() if phone_col else ""
 
-    wav_pcm, timing, from_cache = _generate_batch_row_cached(
-        template_parts, row, voice, model_path, config_path,
-        length_scale, noise_scale, noise_w, pause_ms, 8000, namespace=namespace,
-    )
-    mulaw = audio_format.to_mulaw_wav(wav_pcm)
+    pcm_key = cache.cache_key(full_text, voice, length_scale, noise_scale, noise_w, pause_ms, 8000, namespace=namespace)
+    mulaw = cache.get_mulaw(pcm_key, namespace=namespace)
+    if mulaw is not None:
+        from_cache = True
+        timing_ms  = 0
+    else:
+        wav_pcm, timing, from_cache = _generate_batch_row_cached(
+            template_parts, row, voice, model_path, config_path,
+            length_scale, noise_scale, noise_w, pause_ms, 8000, namespace=namespace,
+        )
+        mulaw = audio_format.to_mulaw_wav(wav_pcm)
+        cache.put_mulaw(pcm_key, mulaw, namespace=namespace)
+        timing_ms = timing.get("total_ms", 0)
 
     audio_id = uuid.uuid4().hex
-    (audios_dir / f"{audio_id}.wav").write_bytes(mulaw)
+    out_path  = audios_dir / f"{audio_id}.wav"
+    threading.Thread(target=out_path.write_bytes, args=(mulaw,), daemon=True).start()
+
+    # μ-law a 8000 Hz: 1 byte = 1 muestra = 0.125 ms; header WAV = 44 bytes
+    duration_ms = (len(mulaw) - 44) * 1000 // 8000
 
     entry = {
-        "audio_id":   audio_id,
-        "row_index":  i + 1,
-        "phone":      phone,
-        "status":     "ok",
-        "duration_ms": _wav_duration_ms(wav_pcm),
-        "size_bytes": len(mulaw),
-        "from_cache": from_cache,
-        "timing_ms":  timing.get("total_ms", 0),
-        "text_hash":  hashlib.sha256(full_text.encode()).hexdigest()[:16],
+        "audio_id":    audio_id,
+        "row_index":   i + 1,
+        "phone":       phone,
+        "status":      "ok",
+        "duration_ms": duration_ms,
+        "size_bytes":  len(mulaw),
+        "from_cache":  from_cache,
+        "timing_ms":   timing_ms,
+        "text_hash":   hashlib.sha256(full_text.encode()).hexdigest()[:16],
     }
     if include_text:
         entry["text"] = full_text
@@ -333,9 +337,13 @@ async def v1_batch_run(request: Request):
     pause_ms     = int(body.get("pauseMs",        150))
     include_text = bool(body.get("includeText",   False))
 
+    campaign_id = (body.get("campaignId") or "").strip()
+
     rows           = [{"_text_": str(item.get("text", "")), "_phone_": str(item.get("recipient", ""))} for item in pending]
     template_parts = [("var", "_text_")]
     namespace      = _safe_component(client_id, "clientId")
+    if campaign_id:
+        namespace = f"{namespace}|{_safe_component(campaign_id, 'campaignId')}"
 
     audios_dir = _campaign_dir(client_id, job_id) / "audios"
     audios_dir.mkdir(parents=True, exist_ok=True)

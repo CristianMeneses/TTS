@@ -70,6 +70,7 @@ class CampaignProcessor(
                 {
                     JobId        = batchId,
                     ClientId     = job.ClientId,
+                    CampaignId   = job.CampaignId,
                     VoiceName    = job.Voice,
                     PendingAudio = pendingAudio,
                     LengthScale  = job.LengthScale,

@@ -11,6 +11,7 @@ class BatchRunRequest
     [JsonPropertyName("lengthScale")]  public float LengthScale { get; set; } = 0.95f;
     [JsonPropertyName("noiseScale")]   public float NoiseScale { get; set; } = 0.85f;
     [JsonPropertyName("noiseW")]       public float NoiseW { get; set; } = 0.9f;
+    [JsonPropertyName("campaignId")]   public string CampaignId { get; set; } = "";
     [JsonPropertyName("pauseMs")]      public int PauseMs { get; set; } = 150;
     [JsonPropertyName("includeText")]  public bool IncludeText { get; set; } = true;
 }

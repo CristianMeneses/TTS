@@ -1,3 +1,4 @@
+using System.Globalization;
 using TtsWorker.Models;
 using TtsWorker.Services;
 
@@ -41,14 +42,15 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
     var job = new CampaignJob(
         JobId:       Guid.NewGuid().ToString("N")[..12],
         ClientId:    clientId,
+        CampaignId:  form["campaign_id"].FirstOrDefault() ?? "",
         Voice:       voice,
         PhoneColumn: form["phone_column"].FirstOrDefault() ?? "telefono",
         TextColumn:  form["text_column"].FirstOrDefault()  ?? "Message",
         FileBytes:   ms.ToArray(),
         FileName:    file.FileName,
-        LengthScale: float.TryParse(form["length_scale"], out var ls) ? ls : 0.95f,
-        NoiseScale:  float.TryParse(form["noise_scale"],  out var ns) ? ns : 0.85f,
-        NoiseW:      float.TryParse(form["noise_w"],      out var nw) ? nw : 0.9f,
+        LengthScale: float.TryParse(form["length_scale"], NumberStyles.Float, CultureInfo.InvariantCulture, out var ls) ? ls : 0.95f,
+        NoiseScale:  float.TryParse(form["noise_scale"],  NumberStyles.Float, CultureInfo.InvariantCulture, out var ns) ? ns : 0.85f,
+        NoiseW:      float.TryParse(form["noise_w"],      NumberStyles.Float, CultureInfo.InvariantCulture, out var nw) ? nw : 0.9f,
         PauseMs:     int.TryParse(form["pause_ms"],       out var pm) ? pm : 150
     );
 
@@ -64,10 +66,11 @@ app.MapPost("/campaigns", async (HttpRequest request) =>
 
     return Results.Accepted($"/campaigns/{job.JobId}", new
     {
-        job_id     = job.JobId,
-        client_id  = clientId,
-        status     = "queued",
-        status_url = $"/campaigns/{job.JobId}",
+        job_id      = job.JobId,
+        client_id   = clientId,
+        campaign_id = job.CampaignId,
+        status      = "queued",
+        status_url  = $"/campaigns/{job.JobId}",
     });
 });
 
