@@ -5,8 +5,11 @@ using TtsWorker.Models;
 
 namespace TtsWorker.Services;
 
+// ORQUESTADOR (productor): recibe el job, lee el Excel, deduplica textos y publica
+// 1 tarea de síntesis por texto único a la cola `tts.tasks`. El progreso y el
+// streaming por lote los maneja ResultCollector conforme llegan los resultados.
 class CampaignProcessor(
-    TtsClient ttsClient,
+    RabbitBus bus,
     IConfiguration config,
     ILogger<CampaignProcessor> logger) : BackgroundService
 {
@@ -18,13 +21,14 @@ class CampaignProcessor(
         });
 
     public static readonly ConcurrentDictionary<string, CampaignStatus> Statuses = new();
+    public static readonly ConcurrentDictionary<string, CampaignState> States = new();
 
-    readonly int _batchSize = config.GetValue("Worker:BatchSize", 500);
+    readonly int _batchSize = config.GetValue("Worker:BatchSize", 250);
     readonly string _ttsBaseUrl = config["Tts:BaseUrl"] ?? "http://localhost:8000";
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("CampaignProcessor iniciado. BatchSize={BatchSize}", _batchSize);
+        logger.LogInformation("CampaignProcessor (orquestador) iniciado. BatchSize={BatchSize}", _batchSize);
         await foreach (var job in Queue.Reader.ReadAllAsync(stoppingToken))
             await ProcessJobAsync(job, stoppingToken);
     }
@@ -41,118 +45,68 @@ class CampaignProcessor(
             if (rows.Count == 0)
                 throw new InvalidOperationException("Archivo sin filas de datos.");
 
-            var batches = ExcelReader.Chunk(rows, _batchSize).ToList();
-            status.State        = "synthesizing";
-            status.TotalRows    = rows.Count;
-            status.TotalBatches = batches.Count;
+            // (rowIndex 1-based, phone, text) — descarta filas sin texto.
+            var items = rows
+                .Select((r, i) => (
+                    RowIndex: i + 1,
+                    Phone:    r.GetValueOrDefault(job.PhoneColumn, "").Trim(),
+                    Text:     r.GetValueOrDefault(job.TextColumn, "").Trim()))
+                .Where(x => !string.IsNullOrEmpty(x.Text))
+                .ToList();
 
-            logger.LogInformation("Job {JobId}: {Rows} filas → {Batches} lotes",
-                job.JobId, rows.Count, batches.Count);
-
-            // ── Fase 2: síntesis TTS por lote ────────────────────────────────
-            var pending = new List<DialerMessage>();
-
-            for (int b = 0; b < batches.Count; b++)
+            // ── Fase 2: dedup + armar estado ─────────────────────────────────
+            var state = new CampaignState
             {
-                if (ct.IsCancellationRequested) break;
+                JobId       = job.JobId,
+                ClientId    = job.ClientId,
+                CampaignId  = job.CampaignId,
+                Voice       = job.Voice,
+                TtsBaseUrl  = _ttsBaseUrl,
+                LengthScale = job.LengthScale,
+                NoiseScale  = job.NoiseScale,
+                NoiseW      = job.NoiseW,
+                PauseMs     = job.PauseMs,
+            };
+            var uniqueTexts = state.Build(items, _batchSize);
 
-                var batch   = batches[b];
-                var batchId = $"{job.JobId}_b{b + 1:D3}";
+            // Registrar ANTES de publicar (evita que un resultado llegue sin estado).
+            States[job.JobId] = state;
+            status.State        = "synthesizing";
+            status.TotalRows    = state.Recipients;
+            status.TotalBatches = state.TotalLotes;
 
-                // Armar la lista de audios pendientes para este lote
-                var pendingAudio = batch.Select(row => new PendingAudioItem
+            logger.LogInformation(
+                "Job {JobId}: {Rows} destinatarios → {Unique} textos únicos → {Lotes} lotes",
+                job.JobId, state.Recipients, uniqueTexts.Count, state.TotalLotes);
+
+            // ── Fase 3: publicar 1 tarea por texto único ─────────────────────
+            foreach (var e in uniqueTexts)
+            {
+                var task = new SynthesisTask
                 {
-                    Recipient = row.GetValueOrDefault(job.PhoneColumn, "").Trim(),
-                    Text      = row.GetValueOrDefault(job.TextColumn, "").Trim(),
-                }).Where(item => !string.IsNullOrEmpty(item.Text)).ToList();
-
-                var request = new BatchRunRequest
-                {
-                    JobId        = batchId,
-                    ClientId     = job.ClientId,
-                    CampaignId   = job.CampaignId,
-                    VoiceName    = job.Voice,
-                    PendingAudio = pendingAudio,
-                    LengthScale  = job.LengthScale,
-                    NoiseScale   = job.NoiseScale,
-                    NoiseW       = job.NoiseW,
-                    PauseMs      = job.PauseMs,
+                    JobId       = job.JobId,
+                    ClientId    = job.ClientId,
+                    CampaignId  = job.CampaignId,
+                    AudioId     = e.AudioId,
+                    VoiceName   = job.Voice,
+                    Text        = e.Text,
+                    LengthScale = job.LengthScale,
+                    NoiseScale  = job.NoiseScale,
+                    NoiseW      = job.NoiseW,
+                    PauseMs     = job.PauseMs,
                 };
-
-                TtsManifest manifest;
-                try
-                {
-                    manifest = await ttsClient.RunBatchAsync(request, ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Batch {BatchId} falló, reintentando...", batchId);
-                    await Task.Delay(2000, ct);
-                    manifest = await ttsClient.RunBatchAsync(request, ct);
-                }
-
-                foreach (var audio in manifest.Audios.Where(a => a.Status == "ok" && a.AudioId != null))
-                {
-                    var phone = !string.IsNullOrEmpty(audio.Recipient) ? audio.Recipient : audio.Phone;
-                    pending.Add(new DialerMessage
-                    {
-                        JobId      = job.JobId,
-                        ClientId   = job.ClientId,
-                        CampaignId = batchId,
-                        BatchId    = batchId,
-                        Phone      = phone,
-                        AudioId    = audio.AudioId!,
-                        AudioUrl   = $"{_ttsBaseUrl}/v1/audio/{job.ClientId}/{batchId}/{audio.AudioId}",
-                        DurationMs = audio.DurationMs,
-                        RowIndex   = audio.RowIndex,
-                        TextHash   = audio.TextHash,
-                    });
-                }
-
-                status.ProcessedRows    += batch.Count;
-                status.SuccessfulRows   += manifest.Summary.Successful;
-                status.FailedRows       += manifest.Summary.Errors;
-                status.CompletedBatches++;
-                status.Batches.Add(new BatchSummary(
-                    batchId, b + 1,
-                    manifest.Summary.Total,
-                    manifest.Summary.Successful,
-                    manifest.Summary.Errors,
-                    manifest.Summary.TotalMs));
-
-                logger.LogInformation(
-                    "Job {JobId}: lote {N}/{Total} — {Ok} ok, {Err} errores, {Ms:F0}ms",
-                    job.JobId, b + 1, batches.Count,
-                    manifest.Summary.Successful, manifest.Summary.Errors, manifest.Summary.TotalMs);
+                await bus.PublishAsync(bus.TasksQueue, JsonSerializer.SerializeToUtf8Bytes(task), ct);
             }
 
-            // ── Fase 3: guardar resultado en JSON (modo prueba, sin RabbitMQ) ──
-            status.State = "publishing";
-
-            var outputDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "tts_output", job.ClientId, job.JobId);
-            Directory.CreateDirectory(outputDir);
-
-            var outputFile = Path.Combine(outputDir, "messages.json");
-            await File.WriteAllTextAsync(outputFile,
-                JsonSerializer.Serialize(pending, new JsonSerializerOptions { WriteIndented = true }), ct);
-
-            status.OutputFile = outputFile;
-            status.State      = "done";
-            logger.LogInformation("Job {JobId}: completado — {N} mensajes guardados en {File}",
-                job.JobId, pending.Count, outputFile);
+            logger.LogInformation("Job {JobId}: {N} tareas publicadas a {Queue}",
+                job.JobId, uniqueTexts.Count, bus.TasksQueue);
         }
         catch (Exception ex)
         {
             status.State = "error";
             status.Error = ex.Message;
-            logger.LogError(ex, "Job {JobId} terminó con error", job.JobId);
-        }
-        finally
-        {
             status.CompletedAt = DateTime.UtcNow;
+            logger.LogError(ex, "Job {JobId} falló en la orquestación", job.JobId);
         }
     }
-
 }

@@ -1,15 +1,12 @@
 import asyncio
 import hashlib
 import io
-import json
 import os
-import re
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -19,15 +16,14 @@ from fastapi.staticfiles import StaticFiles
 
 import audio_format
 import cache
+import storage
 import tts_engine
 import kokoro_engine
 
 MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-_storage_base = os.environ.get("TTS_STORAGE_DIR") or os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
-STORAGE_DIR = Path(_storage_base) / "tts_output"
-STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+STORAGE_DIR = storage.STORAGE_DIR
 
 BATCH_CONCURRENCY = int(os.environ.get("TTS_BATCH_CONCURRENCY", "8"))
 executor = ThreadPoolExecutor(max_workers=max(12, BATCH_CONCURRENCY + 4))
@@ -225,25 +221,21 @@ async def tts_play(key: str):
 
 # ── API v1 — producción ───────────────────────────────────────────────────────
 
-_ID_RE   = re.compile(r"[A-Za-z0-9._\-]{1,128}")
-_UUID_RE = re.compile(r"[0-9a-fA-F]{32}")
+_UUID_RE = storage.UUID_RE
 
 
 def _safe_component(value: str, label: str) -> str:
-    value = (value or "").strip()
-    if value in (".", "..") or not _ID_RE.fullmatch(value):
-        raise HTTPException(status_code=400, detail=f"{label} inválido: use solo letras, números, '.', '_' o '-'")
-    return value
+    try:
+        return storage.safe_component(value, label)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _campaign_dir(client_id: str, campaign_id: str) -> Path:
-    c  = _safe_component(client_id,  "client_id")
-    ca = _safe_component(campaign_id, "campaign_id")
-    d  = (STORAGE_DIR / c / ca).resolve()
-    root = STORAGE_DIR.resolve()
-    if root != d and root not in d.parents:
-        raise HTTPException(status_code=400, detail="Ruta de campaña inválida")
-    return d
+    try:
+        return storage.campaign_dir(client_id, campaign_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 def _generate_row_to_disk(
@@ -308,6 +300,23 @@ async def v1_get_audio(client_id: str, campaign_id: str, audio_id: str):
     return FileResponse(str(path), media_type="audio/wav", filename=f"{audio_id}.wav")
 
 
+@app.get("/v1/audios/{client_id}/{job_id}")
+async def v1_list_audios(client_id: str, job_id: str, limit: int = 50):
+    """Lista los audios generados de un job (para previsualización en el lab)."""
+    try:
+        adir = storage.audios_dir(client_id, job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not adir.exists():
+        return {"client_id": client_id, "job_id": job_id, "count": 0, "audios": []}
+    files = sorted(adir.glob("*.wav"))
+    audios = [
+        {"audio_id": f.stem, "url": f"/v1/audio/{client_id}/{job_id}/{f.stem}"}
+        for f in files[:max(0, limit)]
+    ]
+    return {"client_id": client_id, "job_id": job_id, "count": len(files), "audios": audios}
+
+
 @app.post("/v1/batch/run")
 async def v1_batch_run(request: Request):
     """Endpoint principal para el worker .NET.
@@ -341,9 +350,9 @@ async def v1_batch_run(request: Request):
 
     rows           = [{"_text_": str(item.get("text", "")), "_phone_": str(item.get("recipient", ""))} for item in pending]
     template_parts = [("var", "_text_")]
-    namespace      = _safe_component(client_id, "clientId")
-    if campaign_id:
-        namespace = f"{namespace}|{_safe_component(campaign_id, 'campaignId')}"
+    # Aislamiento del caché: si no viene campaignId, se usa job_id como componente,
+    # así nunca degrada a "por cliente" (dos campañas del mismo cliente no comparten).
+    namespace      = f"{_safe_component(client_id, 'clientId')}|{_safe_component(campaign_id or job_id, 'campaignId')}"
 
     audios_dir = _campaign_dir(client_id, job_id) / "audios"
     audios_dir.mkdir(parents=True, exist_ok=True)

@@ -2,21 +2,37 @@ using System.Globalization;
 using TtsWorker.Models;
 using TtsWorker.Services;
 
-var builder = WebApplication.CreateBuilder(args);
-
-// HTTP client hacia el servicio Python TTS
-builder.Services.AddHttpClient<TtsClient>(client =>
+// ContentRootPath explícito: si el .exe se lanza con ruta completa desde otro
+// directorio (ej. `& "$env:LOCALAPPDATA\TtsWorker\TtsWorker.exe"`), .NET usa el
+// directorio de trabajo actual como content root por defecto — y entonces NO
+// encuentra su propio appsettings.json (silenciosamente cae a valores default,
+// como el puerto 5000 en vez de los 8001 configurados). Fijarlo a la carpeta del
+// ejecutable hace que la config se cargue siempre, sin importar desde dónde se lance.
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
-    var baseUrl = builder.Configuration["Tts:BaseUrl"] ?? "http://localhost:8000";
-    client.BaseAddress = new Uri(baseUrl);
-    // Timeout generoso: un lote de 500 puede tardar varios minutos en frío
-    client.Timeout = TimeSpan.FromMinutes(15);
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory,
 });
 
-// Worker de procesamiento en background
+// CORS permisivo para desarrollo: el panel de campañas del lab se sirve desde
+// otro origen (uvicorn en :8000) y hace fetch a este worker (:8001).
+builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
+    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+
+// Bus de RabbitMQ (conexión única, compartida). Se conecta al arrancar, con retry:
+// RabbitMQ debe estar corriendo (ver infra/rabbitmq.ps1).
+using (var bootLog = LoggerFactory.Create(b => b.AddConsole()))
+{
+    var bus = await RabbitBus.CreateAsync(builder.Configuration, bootLog.CreateLogger<RabbitBus>());
+    builder.Services.AddSingleton(bus);
+}
+
+// Orquestador (productor) + colector de resultados (streaming por lote)
 builder.Services.AddHostedService<CampaignProcessor>();
+builder.Services.AddHostedService<ResultCollector>();
 
 var app = builder.Build();
+app.UseCors();
 
 // ── POST /campaigns ──────────────────────────────────────────────────────────
 // Recibe el Excel y los parámetros, encola el trabajo y responde de inmediato.

@@ -69,9 +69,6 @@
   .stat-box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: .9rem 1rem; text-align: center; }
   .stat-box .num { font-size: 1.4rem; font-weight: 700; color: var(--accent2); }
   .stat-box .desc { font-size: .75rem; color: var(--muted); margin-top: .2rem; }
-  .warmup-tags { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
-  .warmup-tag { background: var(--border); border-radius: 999px; padding: .25rem .8rem; font-size: .82rem; display: flex; align-items: center; gap: .4rem; }
-  .warmup-tag button { margin: 0; padding: 0; background: none; color: var(--muted); font-size: 1rem; line-height: 1; }
   .section-label { font-size: .75rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: .6rem; }
   .download-link { display: inline-block; margin-top: .8rem; color: var(--accent); font-size: .9rem; text-decoration: none; }
   .download-link:hover { text-decoration: underline; }
@@ -87,8 +84,7 @@
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab('single')">Audio individual</div>
-  <div class="tab" onclick="switchTab('batch')">Batch CSV</div>
-  <div class="tab" onclick="switchTab('warmup')">Precalentamiento</div>
+  <div class="tab" onclick="switchTab('campaigns')">Campañas</div>
   <div class="tab" onclick="switchTab('cache')">Caché</div>
 </div>
 
@@ -137,93 +133,6 @@
   </div>
 </div>
 
-<!-- ─── BATCH ─── -->
-<div id="panel-batch" class="panel">
-  <div class="card">
-    <h2>Generación masiva</h2>
-    <label>Template (usa <code>{columna}</code> como placeholder)</label>
-    <textarea id="b-template" rows="3" placeholder='Hola {nombre}, su saldo es {saldo} pesos.'></textarea>
-    <label>Voz</label>
-    <select id="b-voice"></select>
-    <label>Archivo CSV o XLSX</label>
-    <input type="file" id="b-csv" accept=".csv,.xlsx" style="color:var(--text);margin-top:.4rem">
-    <div class="row3" style="margin-top:1rem">
-      <div>
-        <label>Velocidad</label>
-        <input type="number" id="b-length" value="0.95" step="0.05" min="0.5" max="2.0">
-      </div>
-      <div>
-        <label>Variación tonal (noise_scale)</label>
-        <input type="number" id="b-noise" value="0.85" step="0.05" min="0" max="1">
-      </div>
-      <div>
-        <label>Variación ritmo (noise_w)</label>
-        <input type="number" id="b-noisew" value="0.9" step="0.05" min="0" max="1">
-      </div>
-    </div>
-    <div class="toggle-row" style="margin-top:1rem">
-      <input type="checkbox" id="b-telephony" checked>
-      <label for="b-telephony">Modo telefonía (8 kHz) — archivos más pequeños, compatible con llamadas</label>
-    </div>
-    <div class="toggle-row">
-      <input type="checkbox" id="b-zip">
-      <label for="b-zip">Generar ZIP descargable al final</label>
-    </div>
-    <button id="b-btn" onclick="generateBatch()">Generar batch</button>
-    <div class="progress-bar-outer" id="b-progress">
-      <div class="progress-bar-inner" id="b-bar" style="width:0%"></div>
-    </div>
-    <p class="error-msg" id="b-error" style="display:none"></p>
-  </div>
-
-  <div class="card" id="b-result" style="display:none">
-    <h2>Resultado batch</h2>
-    <div class="stat-grid" id="b-stats"></div>
-    <div class="result-list" id="b-list" style="max-height:500px"></div>
-    <div id="b-zip-wrap" style="display:none;margin-top:.8rem">
-      <a class="download-link" id="b-download" href="#">⬇ Descargar ZIP</a>
-    </div>
-  </div>
-</div>
-
-<!-- ─── BENCHMARK ─── -->
-<!-- ─── WARMUP ─── -->
-<div id="panel-warmup" class="panel">
-
-  <div class="card">
-    <h2>Manual — frases / nombres</h2>
-    <p style="color:var(--muted);font-size:.88rem;margin-bottom:1rem">Escribe cada frase o nombre y presiona <b>+</b> o Enter. Se guardan como segmentos en caché.</p>
-    <label>Voz</label>
-    <select id="w-voice"></select>
-    <label>Agregar frase / nombre</label>
-    <div style="display:flex;gap:.5rem;margin-top:.4rem">
-      <input type="text" id="w-input" placeholder='ej. "Juan" o "Buen día"' style="flex:1" onkeydown="if(event.key==='Enter')addWarmupTag()">
-      <button onclick="addWarmupTag()" style="margin-top:0;padding:.65rem 1rem">+</button>
-    </div>
-    <div class="warmup-tags" id="w-tags"></div>
-    <button id="w-btn" onclick="runWarmup()">Precalentar</button>
-  </div>
-
-  <div class="card">
-    <h2>Masivo — desde CSV</h2>
-    <p style="color:var(--muted);font-size:.88rem;margin-bottom:1rem">Sube un CSV y elige la columna a precalentar. Útil para precachear todos los nombres o valores de un lote antes de lanzar el batch.</p>
-    <label>Voz</label>
-    <select id="wcsv-voice"></select>
-    <label>Archivo CSV</label>
-    <input type="file" id="wcsv-file" accept=".csv" style="color:var(--text);margin-top:.4rem">
-    <label>Nombre de la columna a precalentar</label>
-    <input type="text" id="wcsv-col" placeholder='ej. nombre'>
-    <button id="wcsv-btn" onclick="runWarmupCsv()">Precalentar desde CSV</button>
-    <p class="error-msg" id="wcsv-error" style="display:none"></p>
-  </div>
-
-  <div class="card" id="w-result" style="display:none">
-    <h2>Resultado</h2>
-    <div class="stat-grid" id="w-stats" style="margin-bottom:1rem"></div>
-    <div class="result-list" id="w-list"></div>
-  </div>
-</div>
-
 <!-- ─── CACHE ─── -->
 <div id="panel-cache" class="panel">
   <div class="card">
@@ -237,14 +146,56 @@
   </div>
 </div>
 
+<!-- ─── CAMPAÑAS (worker distribuido) ─── -->
+<div id="panel-campaigns" class="panel">
+  <div class="card">
+    <h2>Campaña masiva (worker + RabbitMQ)</h2>
+    <p style="color:var(--muted);font-size:.82rem;margin:.2rem 0 .8rem">
+      Sube el Excel al worker (:8001). La síntesis se reparte entre los consumidores;
+      el marcador emulado empieza a llamar por lote. El progreso se refresca en vivo.
+    </p>
+    <div class="row" style="display:flex;gap:.8rem;flex-wrap:wrap;align-items:flex-end">
+      <div><label>Idioma</label><select id="c-lang" style="width:160px" onchange="filterCampaignVoices()"></select></div>
+      <div style="flex:1;min-width:220px"><label>Voz</label><select id="c-voice" style="width:100%"></select></div>
+    </div>
+    <div class="row" style="display:flex;gap:.8rem;flex-wrap:wrap;margin-top:.4rem">
+      <div><label>Client ID</label><input type="text" id="c-client" value="Cliente05" style="width:160px"></div>
+      <div><label>Campaign ID</label><input type="text" id="c-campaign" value="julio" style="width:160px"></div>
+    </div>
+    <div class="row" style="display:flex;gap:.8rem;flex-wrap:wrap;margin-top:.4rem">
+      <div><label>Columna teléfono</label><input type="text" id="c-phonecol" value="To" style="width:160px"></div>
+      <div><label>Columna texto</label><input type="text" id="c-textcol" value="Message" style="width:160px"></div>
+      <div><label>Length scale</label><input type="number" id="c-length" value="1.2" step="0.05" min="0.5" max="2.0" style="width:120px"></div>
+    </div>
+    <label style="margin-top:.4rem">Archivo (.xlsx / .csv)</label>
+    <input type="file" id="c-file" accept=".csv,.xlsx" style="color:var(--text);margin-top:.4rem" onchange="validateCampaignFileLang()">
+    <div id="c-lang-status" style="display:none;margin-top:.5rem;padding:.5rem .7rem;border-radius:8px;font-size:.82rem"></div>
+    <button id="c-btn" onclick="submitCampaign()" style="margin-top:.6rem">Enviar campaña</button>
+    <p class="error-msg" id="c-error" style="display:none"></p>
+  </div>
+
+  <div class="card" id="c-result" style="display:none">
+    <h2>Progreso <span id="c-jobid" style="color:var(--muted);font-size:.8rem"></span></h2>
+    <div class="progress-bar-outer"><div class="progress-bar-inner" id="c-bar" style="width:0%"></div></div>
+    <div class="stat-grid" id="c-stats" style="margin-top:.8rem"></div>
+    <h2 style="margin-top:1rem">Audios generados <button class="secondary" style="font-size:.75rem" onclick="loadCampaignAudios()">Refrescar</button></h2>
+    <div class="result-list" id="c-audios" style="max-height:420px"></div>
+  </div>
+</div>
+
+<script src="/static/vendor/xlsx.full.min.js"></script>
 <script>
+// Base del worker .NET (mismo host que el lab, puerto 8001). CORS habilitado en el worker.
+const WORKER_BASE = `${location.protocol}//${location.hostname}:8001`;
+let campaignPollTimer = null;
+let currentJob = null;
 let voices = [];
 
 async function init() {
   try {
     const res = await fetch('/voices');
     voices = await res.json();
-    const selects = ['s-voice','b-voice','w-voice','wcsv-voice'];
+    const selects = ['s-voice'];  // c-voice se llena filtrado por idioma (filterCampaignVoices)
     selects.forEach(id => {
       const sel = document.getElementById(id);
       const piper  = voices.filter(v => v.ready && v.engine !== 'kokoro');
@@ -276,14 +227,101 @@ async function init() {
     });
     document.getElementById('voiceCount').textContent =
       `${voices.filter(v=>v.ready).length} voz(es) disponible(s)`;
+
+    // Poblar el selector de idioma del panel Campañas con los idiomas de las voces
+    const order = ['es','en','pt','fr','it','hi','ja','zh'];
+    const langs = [...new Set(voices.filter(v=>v.ready).map(voiceLang))]
+      .sort((a,b)=> ((order.indexOf(a)+1)||99) - ((order.indexOf(b)+1)||99));
+    document.getElementById('c-lang').innerHTML =
+      langs.map(l=>`<option value="${l}">${LANG_LABELS[l]||l}</option>`).join('');
+    filterCampaignVoices();
   } catch(e) {
     document.getElementById('voiceCount').textContent = 'Error al cargar voces';
   }
 }
 
+// ─── Idioma: mapeo de voz→idioma, selector, detección heurística ───
+const LANG_LABELS = { es:'Español', en:'Inglés', pt:'Portugués', fr:'Francés', it:'Italiano', hi:'Hindi', ja:'Japonés', zh:'Chino' };
+
+// Idioma de una voz: Kokoro trae lang_code; Piper se deduce del prefijo del nombre.
+function voiceLang(v) {
+  if (v.engine === 'kokoro') {
+    const lc = (v.lang_code || '').toLowerCase();
+    if (lc.startsWith('en')) return 'en';
+    if (lc.startsWith('pt')) return 'pt';
+    return lc.slice(0,2) || 'es';
+  }
+  const m = /^([a-z]{2})/.exec((v.name || '').toLowerCase());
+  return m ? m[1] : 'es';
+}
+
+// Rellena c-voice solo con las voces del idioma elegido; re-valida el archivo si hay uno.
+function filterCampaignVoices() {
+  const lang = document.getElementById('c-lang').value;
+  const sel = document.getElementById('c-voice');
+  const matches = voices.filter(v => v.ready && voiceLang(v) === lang);
+  sel.innerHTML = matches.length
+    ? matches.map(v => `<option value="${v.name}">${v.engine==='kokoro' ? (v.voice_id+' — '+v.language) : v.name}</option>`).join('')
+    : `<option value="">Sin voces para ${LANG_LABELS[lang]||lang}</option>`;
+  if (document.getElementById('c-file').files[0]) validateCampaignFileLang();
+}
+
+// Detección de idioma por palabras comunes/dominio (es/en/pt). Cero dependencias.
+const LANG_WORDS = {
+  es: ['que','de','la','el','los','las','su','tu','no','con','para','por','una','un','en','hoy','pago','paga','pague','pesos','deuda','adeudo','saldo','evite','evadir','soluciona','cobro','domicilio','directo','dias','esta','pendiente','regularice','deja','esconderte'],
+  en: ['the','and','your','today','stop','hiding','avoiding','avoid','will','not','solve','debt','with','full','collection','at','home','pay','dollars','directly','to','of','is','you','a','total'],
+  pt: ['que','nao','não','sua','hoje','com','divida','dívida','pague','evite','evitar','direto','pare','cobranca','cobrança','esconder','resolve','reais','domicilio','domicílio','voce','você','em','na','de','para','uma']
+};
+function detectLang(text) {
+  const words = (text || '').toLowerCase().split(/[^a-záéíóúñüàâãêôçõ]+/i).filter(Boolean);
+  if (words.length < 3) return { lang: null, scores: {} };
+  const scores = {};
+  for (const [lang, list] of Object.entries(LANG_WORDS)) {
+    const set = new Set(list);
+    scores[lang] = words.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
+  }
+  let best = null, bestScore = 0;
+  for (const [l, sc] of Object.entries(scores)) { if (sc > bestScore) { bestScore = sc; best = l; } }
+  // Umbral: exige señal mínima para no adivinar con ruido.
+  if (bestScore < Math.max(2, words.length * 0.03)) return { lang: null, scores };
+  return { lang: best, scores };
+}
+
+// Parsea el Excel EN EL NAVEGADOR (SheetJS), muestrea la columna de texto y valida idioma.
+async function validateCampaignFileLang() {
+  const file = document.getElementById('c-file').files[0];
+  if (!file) { document.getElementById('c-lang-status').style.display = 'none'; return; }
+  if (typeof XLSX === 'undefined') { showLangStatus('gris', 'Librería de lectura de Excel no cargó; no se validó el idioma.'); return; }
+  const col = (document.getElementById('c-textcol').value || 'Message').trim();
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    const msgs = rows.map(r => String(r[col] || '').trim()).filter(Boolean).slice(0, 30);
+    if (!msgs.length) { showLangStatus('gris', `No encontré contenido en la columna "${col}".`); return; }
+    const { lang } = detectLang(msgs.join('  '));
+    const selected = document.getElementById('c-lang').value;
+    if (!lang) showLangStatus('gris', `No pude determinar el idioma con confianza (muestra de ${msgs.length} mensajes).`);
+    else if (lang === selected) showLangStatus('ok', `✓ Los mensajes parecen estar en ${LANG_LABELS[lang]||lang} (muestra de ${msgs.length}).`);
+    else showLangStatus('warn', `⚠ Los mensajes parecen estar en ${LANG_LABELS[lang]||lang}, pero seleccionaste ${LANG_LABELS[selected]||selected}. Puedes enviar igual.`);
+  } catch (e) {
+    showLangStatus('gris', 'No pude leer el archivo para validar el idioma: ' + e.message);
+  }
+}
+function showLangStatus(kind, msg) {
+  const el = document.getElementById('c-lang-status');
+  const styles = {
+    ok:   'background:rgba(62,207,142,.12);color:#7ee8b8;border:1px solid #3ecf8e',
+    warn: 'background:rgba(217,154,62,.12);color:#e8b866;border:1px solid #d99a3e',
+    gris: 'background:var(--bg);color:var(--muted);border:1px solid var(--border)'
+  };
+  el.style.cssText = `display:block;margin-top:.5rem;padding:.5rem .7rem;border-radius:8px;font-size:.82rem;${styles[kind]}`;
+  el.textContent = msg;
+}
+
 
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ['single','batch','warmup','cache'][i]===name));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active', ['single','campaigns','cache'][i]===name));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   document.getElementById('panel-'+name).classList.add('active');
   if(name==='cache') loadCacheStats();
@@ -317,13 +355,15 @@ async function generateSingle() {
     document.getElementById('s-audio').src = `/tts/play/${data.play_key}`;
     document.getElementById('s-total').textContent = fromCache ? '< 1 (caché)' : t.server_total_ms;
     document.getElementById('s-inf').textContent = fromCache ? '< 1 (caché)' : t.inference_ms;
-    document.getElementById('s-overhead').textContent = fromCache ? '—' : t.queue_overhead_ms;
+    document.getElementById('s-overhead').textContent = fromCache ? '—' : Math.max(0, (t.server_total_ms - t.inference_ms)).toFixed(1);
     document.getElementById('s-segs').textContent = fromCache ? '—' : t.segments;
     document.getElementById('s-hits').textContent = fromCache ? t.segments : t.cache_hits;
     document.getElementById('s-misses').textContent = fromCache ? '0' : t.cache_misses;
     document.getElementById('s-cache-badge').innerHTML = fromCache
       ? '<span class="cache-badge">⚡ CACHÉ COMPLETO</span>' : '';
-    document.getElementById('s-download').href = `/tts/download/${data.filename}`;
+    const dl = document.getElementById('s-download');
+    dl.href = `/tts/play/${data.play_key}`;
+    dl.setAttribute('download', 'audio.wav');
     document.getElementById('s-result').style.display = 'block';
   } catch(e) {
     alert('Error: ' + e.message);
@@ -331,221 +371,6 @@ async function generateSingle() {
   // El botón se reactiva aquí — cuando el POST termina (= inferencia lista)
   // El audio sigue cargando en paralelo en el <audio> tag
   btn.disabled = false; btn.textContent = 'Generar audio';
-}
-
-async function generateBatch() {
-  const btn = document.getElementById('b-btn');
-  const template = document.getElementById('b-template').value.trim();
-  const csvFile = document.getElementById('b-csv').files[0];
-  const errEl = document.getElementById('b-error');
-  errEl.style.display = 'none';
-
-  if(!template || !csvFile) { errEl.textContent='Completa template y archivo'; errEl.style.display='block'; return; }
-
-  let totalRows = 0; // lo fija el evento 'start' del stream (sirve para csv y xlsx)
-
-  btn.disabled = true; btn.textContent = 'Procesando…';
-  document.getElementById('b-progress').style.display = 'block';
-  document.getElementById('b-bar').style.width = '0%';
-  document.getElementById('b-result').style.display = 'block';
-  document.getElementById('b-list').innerHTML = '';
-  document.getElementById('b-stats').innerHTML = '';
-  document.getElementById('b-zip-wrap').style.display = 'none';
-
-  const includeZip = document.getElementById('b-zip').checked;
-  const fd = new FormData();
-  fd.append('template', template);
-  fd.append('csv_file', csvFile);
-  fd.append('voice', document.getElementById('b-voice').value);
-  fd.append('length_scale', document.getElementById('b-length').value);
-  fd.append('noise_scale', document.getElementById('b-noise').value);
-  fd.append('noise_w', document.getElementById('b-noisew').value);
-  fd.append('pause_ms', 150);
-  fd.append('output_sample_rate', document.getElementById('b-telephony').checked ? 8000 : 22050);
-  fd.append('include_zip', includeZip ? 'true' : 'false');
-
-  try {
-    const res = await fetch('/tts/batch', { method:'POST', body:fd });
-    if(!res.ok) { const e=await res.json(); throw new Error(e.detail||'Error'); }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let completedRows = 0;
-
-    while(true) {
-      const { value, done } = await reader.read();
-      if(done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // guarda línea incompleta
-      for(const line of lines) {
-        if(!line.startsWith('data: ')) continue;
-        let data;
-        try { data = JSON.parse(line.slice(6)); } catch { continue; }
-        if(data.start) {
-          totalRows = data.total;
-        } else if(data.done) {
-          _renderBatchSummary(data, totalRows, completedRows);
-          document.getElementById('b-bar').style.width = '100%';
-          btn.disabled = false; btn.textContent = 'Generar batch';
-          setTimeout(()=>{ document.getElementById('b-progress').style.display='none'; }, 1200);
-        } else if(data.error) {
-          _renderBatchRowError(data);
-          completedRows++;
-          document.getElementById('b-bar').style.width = (completedRows / totalRows * 100) + '%';
-        } else {
-          _renderBatchRow(data);
-          completedRows++;
-          document.getElementById('b-bar').style.width = (completedRows / totalRows * 100) + '%';
-        }
-      }
-    }
-  } catch(e) {
-    errEl.textContent = 'Error: ' + e.message; errEl.style.display = 'block';
-    btn.disabled = false; btn.textContent = 'Generar batch';
-    document.getElementById('b-progress').style.display = 'none';
-  }
-}
-
-function _renderBatchRow(data) {
-  const list = document.getElementById('b-list');
-  const div = document.createElement('div');
-  div.className = 'result-item';
-  div.style.flexDirection = 'column';
-  div.style.alignItems = 'flex-start';
-  div.style.gap = '.4rem';
-  const cacheTag = data.from_cache ? '<span class="cache-badge">⚡ caché</span>' : '';
-  div.innerHTML = `
-    <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
-      <span class="label">Fila ${data.row} — <code style="font-size:.8rem">${data.filename}</code>${cacheTag}</span>
-      <span class="meta">${data.from_cache ? '&lt;1' : data.timing_ms} ms</span>
-    </div>
-    <audio controls src="/tts/play/${data.play_key}" style="width:100%;height:32px;margin:0"></audio>
-  `;
-  list.appendChild(div);
-  list.scrollTop = list.scrollHeight;
-}
-
-function _renderBatchRowError(data) {
-  const list = document.getElementById('b-list');
-  const div = document.createElement('div');
-  div.className = 'result-item error';
-  div.innerHTML = `<span class="label">Fila ${data.row}</span><span class="meta" style="color:var(--danger)">${data.error}</span>`;
-  list.appendChild(div);
-}
-
-function _renderBatchSummary(data, totalRows, successful) {
-  const avgMs = successful > 0 ? Math.round(data.total_ms / successful) : 0;
-  const cacheCount = 0; // el server no envía cache count en done por ahora
-  document.getElementById('b-stats').innerHTML = `
-    <div class="stat-box"><div class="num">${data.successful}</div><div class="desc">Audios generados</div></div>
-    <div class="stat-box"><div class="num">${Math.round(data.total_ms)} ms</div><div class="desc">Tiempo total</div></div>
-    <div class="stat-box"><div class="num">${avgMs} ms</div><div class="desc">Promedio por audio</div></div>
-    ${data.errors > 0 ? `<div class="stat-box"><div class="num" style="color:var(--danger)">${data.errors}</div><div class="desc">Errores</div></div>` : ''}
-  `;
-  if(data.zip_key) {
-    const a = document.getElementById('b-download');
-    a.href = `/tts/zip/${data.zip_key}`;
-    a.download = `batch_${data.job_id}.zip`;
-    document.getElementById('b-zip-wrap').style.display = 'block';
-  }
-}
-
-async function runBenchmark() {
-  const btn = document.getElementById('bm-btn');
-  btn.disabled = true; btn.textContent = 'Ejecutando…';
-  const fd = new FormData();
-  fd.append('text', document.getElementById('bm-text').value);
-  fd.append('voice', document.getElementById('bm-voice').value);
-  fd.append('n', document.getElementById('bm-n').value);
-  try {
-    const res = await fetch('/benchmark', { method:'POST', body:fd });
-    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
-    const d = await res.json();
-    document.getElementById('bm-stats').innerHTML = `
-      <div class="stat-box"><div class="num">${d.min_ms}</div><div class="desc">Mínimo (ms)</div></div>
-      <div class="stat-box"><div class="num">${d.avg_ms}</div><div class="desc">Promedio (ms)</div></div>
-      <div class="stat-box"><div class="num">${d.max_ms}</div><div class="desc">Máximo (ms)</div></div>
-      <div class="stat-box"><div class="num">${d.p95_ms}</div><div class="desc">P95 (ms)</div></div>
-    `;
-    document.getElementById('bm-runs').innerHTML = d.runs.map((t,i)=>`<span style="margin-right:.6rem">Run ${i+1}: <b style="color:var(--accent2)">${t} ms</b></span>`).join('');
-    document.getElementById('bm-result').style.display = 'block';
-  } catch(e) { alert('Error: '+e.message); }
-  btn.disabled = false; btn.textContent = 'Ejecutar benchmark';
-}
-
-let warmupPhrases = [];
-function addWarmupTag() {
-  const inp = document.getElementById('w-input');
-  const val = inp.value.trim();
-  if(!val || warmupPhrases.includes(val)) { inp.value=''; return; }
-  warmupPhrases.push(val);
-  renderWarmupTags();
-  inp.value = '';
-}
-function removeWarmupTag(i) {
-  warmupPhrases.splice(i,1);
-  renderWarmupTags();
-}
-function renderWarmupTags() {
-  document.getElementById('w-tags').innerHTML = warmupPhrases.map((p,i)=>
-    `<div class="warmup-tag">${p}<button onclick="removeWarmupTag(${i})">×</button></div>`
-  ).join('');
-}
-function _renderWarmupResults(warmed) {
-  const newOnes = warmed.filter(r => r.status === 'cached');
-  const hits = warmed.filter(r => r.status === 'already_cached');
-  document.getElementById('w-stats').innerHTML = `
-    <div class="stat-box"><div class="num">${warmed.length}</div><div class="desc">Total</div></div>
-    <div class="stat-box"><div class="num" style="color:var(--success)">${newOnes.length}</div><div class="desc">Nuevos</div></div>
-    <div class="stat-box"><div class="num" style="color:var(--muted)">${hits.length}</div><div class="desc">Ya en caché</div></div>
-  `;
-  document.getElementById('w-list').innerHTML = warmed.map(r =>
-    `<div class="result-item">
-      <span class="label">${r.phrase}</span>
-      <span class="meta">${r.status === 'cached' ? `✅ ${r.ms} ms` : '⚡ ya en caché'}</span>
-    </div>`
-  ).join('');
-  document.getElementById('w-result').style.display = 'block';
-}
-
-async function runWarmup() {
-  if(!warmupPhrases.length) return;
-  const btn = document.getElementById('w-btn');
-  btn.disabled = true; btn.textContent = 'Precalentando…';
-  const fd = new FormData();
-  fd.append('phrases', JSON.stringify(warmupPhrases));
-  fd.append('voice', document.getElementById('w-voice').value);
-  try {
-    const res = await fetch('/warmup', { method:'POST', body:fd });
-    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
-    const d = await res.json();
-    _renderWarmupResults(d.warmed);
-  } catch(e) { alert('Error: '+e.message); }
-  btn.disabled = false; btn.textContent = 'Precalentar';
-}
-
-async function runWarmupCsv() {
-  const btn = document.getElementById('wcsv-btn');
-  const errEl = document.getElementById('wcsv-error');
-  const file = document.getElementById('wcsv-file').files[0];
-  const col = document.getElementById('wcsv-col').value.trim();
-  errEl.style.display = 'none';
-  if(!file || !col) { errEl.textContent='Selecciona un CSV e indica la columna'; errEl.style.display='block'; return; }
-
-  btn.disabled = true; btn.textContent = 'Precalentando…';
-  const fd = new FormData();
-  fd.append('csv_file', file);
-  fd.append('column', col);
-  fd.append('voice', document.getElementById('wcsv-voice').value);
-  try {
-    const res = await fetch('/warmup/csv', { method:'POST', body:fd });
-    if(!res.ok) { const e=await res.json(); throw new Error(e.detail); }
-    const d = await res.json();
-    _renderWarmupResults(d.warmed);
-  } catch(e) { errEl.textContent='Error: '+e.message; errEl.style.display='block'; }
-  btn.disabled = false; btn.textContent = 'Precalentar desde CSV';
 }
 
 async function loadCacheStats() {
@@ -569,6 +394,90 @@ async function clearCache() {
   const d = await res.json();
   alert(`${d.deleted} archivos eliminados`);
   loadCacheStats();
+}
+
+// ─── Campañas (worker distribuido) ───
+async function submitCampaign() {
+  const btn = document.getElementById('c-btn');
+  const err = document.getElementById('c-error');
+  err.style.display = 'none';
+  const file = document.getElementById('c-file').files[0];
+  if (!file) { err.textContent = 'Selecciona un archivo.'; err.style.display='block'; return; }
+
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('client_id',    document.getElementById('c-client').value.trim());
+  fd.append('campaign_id',  document.getElementById('c-campaign').value.trim());
+  fd.append('voice',        document.getElementById('c-voice').value);
+  fd.append('phone_column', document.getElementById('c-phonecol').value.trim());
+  fd.append('text_column',  document.getElementById('c-textcol').value.trim());
+  fd.append('length_scale', document.getElementById('c-length').value);
+
+  btn.disabled = true; btn.textContent = 'Enviando…';
+  try {
+    const res = await fetch(`${WORKER_BASE}/campaigns`, { method:'POST', body: fd });
+    if (!res.ok) throw new Error(`Worker respondió ${res.status}`);
+    const data = await res.json();
+    currentJob = { jobId: data.job_id, clientId: data.client_id, lastBatches: 0 };
+    document.getElementById('c-result').style.display = 'block';
+    document.getElementById('c-jobid').textContent = `#${data.job_id}`;
+    document.getElementById('c-audios').innerHTML = '';
+    if (campaignPollTimer) clearInterval(campaignPollTimer);
+    campaignPollTimer = setInterval(pollCampaign, 1000);
+    pollCampaign();
+  } catch(e) {
+    err.textContent = 'Error: ' + e.message + ' (¿worker corriendo en :8001?)';
+    err.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar campaña';
+  }
+}
+
+async function pollCampaign() {
+  if (!currentJob) return;
+  try {
+    const res = await fetch(`${WORKER_BASE}/campaigns/${currentJob.jobId}`);
+    if (!res.ok) return;
+    const s = await res.json();
+    const pct = s.totalRows ? Math.round((s.processedRows / s.totalRows) * 100) : 0;
+    document.getElementById('c-bar').style.width = pct + '%';
+    const elapsedSec = (s.elapsedMs / 1000).toFixed(1);
+    document.getElementById('c-stats').innerHTML = `
+      <div class="stat-box"><div class="num">${s.state}</div><div class="desc">estado</div></div>
+      <div class="stat-box"><div class="num">${elapsedSec}s</div><div class="desc">${s.state==='done'?'duración total':'transcurrido'}</div></div>
+      <div class="stat-box"><div class="num">${s.processedRows}/${s.totalRows}</div><div class="desc">destinatarios</div></div>
+      <div class="stat-box"><div class="num">${s.completedBatches}/${s.totalBatches}</div><div class="desc">lotes liberados</div></div>
+      <div class="stat-box"><div class="num">${s.successfulRows||0}</div><div class="desc">ok</div></div>
+      ${s.failedRows>0?`<div class="stat-box"><div class="num" style="color:var(--danger)">${s.failedRows}</div><div class="desc">errores</div></div>`:''}`;
+    // Recargar la lista de audios solo cuando se libera un lote nuevo (no en cada
+    // poll), para no refetchear los 50 audios y no forzar un glob del directorio
+    // en el servidor cada segundo.
+    if (s.completedBatches > 0 && s.completedBatches !== currentJob.lastBatches) {
+      currentJob.lastBatches = s.completedBatches;
+      loadCampaignAudios();
+    }
+    if (s.state === 'done' || s.state === 'error') {
+      clearInterval(campaignPollTimer); campaignPollTimer = null;
+      loadCampaignAudios();
+    }
+  } catch(e) { /* worker aún no responde */ }
+}
+
+async function loadCampaignAudios() {
+  if (!currentJob) return;
+  try {
+    // Los audios se sirven desde el API Python (mismo origen que el lab, :8000).
+    const res = await fetch(`/v1/audios/${currentJob.clientId}/${currentJob.jobId}?limit=50`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = document.getElementById('c-audios');
+    list.innerHTML = `<p style="color:var(--muted);font-size:.8rem">${data.count} audio(s) generado(s)${data.count>50?' — mostrando 50':''}</p>` +
+      data.audios.map(a => `
+        <div class="result-item" style="display:flex;align-items:center;gap:.6rem">
+          <span style="font-family:monospace;font-size:.72rem;color:var(--muted)">${a.audio_id.slice(0,8)}</span>
+          <audio controls preload="none" src="${a.url}" style="height:32px;flex:1"></audio>
+        </div>`).join('');
+  } catch(e) { /* aún sin audios */ }
 }
 
 init();

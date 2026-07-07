@@ -12,6 +12,12 @@ import cache as cache_module
 
 _voice_cache: dict = {}
 
+# ── Caché de segmentos: AISLADO por campaña ──────────────────────────────────
+# Los segmentos (trozos de frase) se cachean bajo el mismo namespace clientId|
+# campaignId que el audio final. Nada se comparte entre clientes ni entre campañas
+# distintas: un cliente/campaña nueva nunca reusa segmentos de otro. Solo re-correr
+# la MISMA campaña aprovecha el caché.
+
 
 def _trim_silence(wav_bytes: bytes, threshold: int = 300, frame_ms: int = 10) -> bytes:
     buf = io.BytesIO(wav_bytes)
